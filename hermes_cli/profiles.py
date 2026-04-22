@@ -309,10 +309,9 @@ def _check_gateway_running(profile_dir: Path) -> bool:
             return False
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, 0)  # existence check
-        return True
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError,
-            ProcessLookupError, PermissionError, OSError):
+        from tools.platform_compat import pid_alive as _pid_alive
+        return _pid_alive(pid)
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
         return False
 
 
@@ -658,19 +657,18 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text().strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, _signal.SIGTERM)
+        from tools.platform_compat import pid_alive as _pid_alive, terminate_pid as _terminate_pid
+        _terminate_pid(pid, force=False)
         # Wait up to 10s for graceful shutdown
         for _ in range(20):
             _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not _pid_alive(pid):
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
-        # Force kill
+        # Force kill (taskkill /T /F on Windows, SIGKILL on POSIX)
         try:
-            os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
+            _terminate_pid(pid, force=True)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):

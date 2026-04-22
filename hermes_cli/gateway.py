@@ -316,12 +316,11 @@ def stop_profile_gateway() -> bool:
 
     # Wait briefly for it to exit
     import time as _time
+    from tools.platform_compat import pid_alive as _pid_alive
     for _ in range(20):
-        try:
-            os.kill(pid, 0)
-            _time.sleep(0.5)
-        except (ProcessLookupError, PermissionError):
+        if not _pid_alive(pid):
             break
+        _time.sleep(0.5)
 
     remove_pid_file()
     return True
@@ -1150,13 +1149,12 @@ def systemd_restart(system: bool = False):
 
         # Phase 1: wait for old process to exit (drain + shutdown)
         print(f"⏳ {scope_label} service draining active work...")
+        from tools.platform_compat import pid_alive as _pid_alive
         deadline = time.time() + 90
         while time.time() < deadline:
-            try:
-                os.kill(pid, 0)
-                time.sleep(1)
-            except (ProcessLookupError, PermissionError):
+            if not _pid_alive(pid):
                 break  # old process is gone
+            time.sleep(1)
         else:
             print(f"⚠ Old process (PID {pid}) still alive after 90s")
 

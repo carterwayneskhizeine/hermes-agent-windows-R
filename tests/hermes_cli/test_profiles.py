@@ -811,11 +811,11 @@ class TestEdgeCases:
         pid_file = default_home / "gateway.pid"
         pid_file.write_text(json.dumps({"pid": 99999}))
 
-        # os.kill(99999, 0) should raise ProcessLookupError -> not running
+        # pid_alive(99999) should return False -> not running
         assert _check_gateway_running(default_home) is False
 
-        # Mock os.kill to simulate a running process
-        with patch("os.kill", return_value=None):
+        # Mock pid_alive to simulate a running process
+        with patch("tools.platform_compat.pid_alive", return_value=True):
             assert _check_gateway_running(default_home) is True
 
     def test_gateway_running_check_plain_pid(self, profile_env):
@@ -826,7 +826,7 @@ class TestEdgeCases:
         pid_file = default_home / "gateway.pid"
         pid_file.write_text("99999")
 
-        with patch("os.kill", return_value=None):
+        with patch("tools.platform_compat.pid_alive", return_value=True):
             assert _check_gateway_running(default_home) is True
 
     def test_profile_name_boundary_single_char(self):

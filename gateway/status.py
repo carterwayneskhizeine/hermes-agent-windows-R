@@ -54,30 +54,9 @@ def _utc_now_iso() -> str:
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
-    """Terminate a PID with platform-appropriate force semantics.
-
-    POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
-    because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
-    """
-    if force and _IS_WINDOWS:
-        try:
-            result = subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except FileNotFoundError:
-            os.kill(pid, signal.SIGTERM)
-            return
-
-        if result.returncode != 0:
-            details = (result.stderr or result.stdout or "").strip()
-            raise OSError(details or f"taskkill failed for PID {pid}")
-        return
-
-    sig = signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM)
-    os.kill(pid, sig)
+    """Terminate a PID with platform-appropriate force semantics."""
+    from tools.platform_compat import terminate_pid as _terminate_pid
+    _terminate_pid(pid, force=force)
 
 
 def _scope_hash(identity: str) -> str:
@@ -412,40 +391,9 @@ def release_all_scoped_locks() -> int:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Cross-platform check whether ``pid`` belongs to a living process.
-
-    On Windows, ``os.kill(pid, 0)`` is unsafe and can raise WinError 11/87
-    because signal 0 is not supported consistently. Use psutil when available
-    and fall back to ``tasklist`` otherwise.
-    """
-    import sys as _sys
-
-    if _sys.platform == "win32":
-        try:
-            import psutil
-
-            return psutil.pid_exists(pid)
-        except ImportError:
-            import subprocess as _sp
-
-            try:
-                result = _sp.run(
-                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                return str(pid) in result.stdout
-            except Exception:
-                return True
-
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
-    except OSError:
-        return False
+    """Cross-platform check whether ``pid`` belongs to a living process."""
+    from tools.platform_compat import pid_alive
+    return pid_alive(pid)
 
 
 def get_running_pid() -> Optional[int]:

@@ -37,7 +37,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("tools.platform_compat.pid_alive", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
 
@@ -53,7 +53,7 @@ class TestGatewayPidState:
             "start_time": 123,
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("tools.platform_compat.pid_alive", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
         monkeypatch.setattr(
             status,
@@ -135,14 +135,15 @@ class TestGatewayRuntimeStatus:
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
+        from tools import platform_compat
         calls = []
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(platform_compat, "_IS_WINDOWS", True)
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None):
             calls.append((cmd, capture_output, text, timeout))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        monkeypatch.setattr(status.subprocess, "run", fake_run)
+        monkeypatch.setattr(platform_compat.subprocess, "run", fake_run)
 
         status.terminate_pid(123, force=True)
 
@@ -151,8 +152,9 @@ class TestTerminatePid:
         ]
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
+        from tools import platform_compat
         calls = []
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(platform_compat, "_IS_WINDOWS", True)
 
         def fake_run(*args, **kwargs):
             raise FileNotFoundError
@@ -160,12 +162,12 @@ class TestTerminatePid:
         def fake_kill(pid, sig):
             calls.append((pid, sig))
 
-        monkeypatch.setattr(status.subprocess, "run", fake_run)
-        monkeypatch.setattr(status.os, "kill", fake_kill)
+        monkeypatch.setattr(platform_compat.subprocess, "run", fake_run)
+        monkeypatch.setattr(platform_compat.os, "kill", fake_kill)
 
         status.terminate_pid(456, force=True)
 
-        assert calls == [(456, status.signal.SIGTERM)]
+        assert calls == [(456, platform_compat.signal.SIGTERM)]
 
 
 class TestScopedLocks:
@@ -179,7 +181,7 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr("tools.platform_compat.pid_alive", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
@@ -197,10 +199,7 @@ class TestScopedLocks:
             "kind": "hermes-gateway",
         }))
 
-        def fake_kill(pid, sig):
-            raise ProcessLookupError
-
-        monkeypatch.setattr(status.os, "kill", fake_kill)
+        monkeypatch.setattr("tools.platform_compat.pid_alive", lambda pid: False)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 

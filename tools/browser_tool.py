@@ -563,14 +563,10 @@ def _reap_orphaned_browser_sessions():
             continue
 
         # Check if the daemon is still alive
-        try:
-            os.kill(daemon_pid, 0)  # signal 0 = existence check
-        except ProcessLookupError:
+        from tools.platform_compat import pid_alive as _pid_alive
+        if not _pid_alive(daemon_pid):
             # Already dead, just clean up the dir
             shutil.rmtree(socket_dir, ignore_errors=True)
-            continue
-        except PermissionError:
-            # Alive but owned by someone else — leave it alone
             continue
 
         # Daemon is alive and not tracked — orphan. Kill it.
