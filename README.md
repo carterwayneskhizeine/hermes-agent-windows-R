@@ -46,8 +46,8 @@
 ### 1. 克隆仓库
 
 ```powershell
-git clone <仓库地址>
-cd hermes-agent-2026.4.16
+git clone https://github.com/carterwayneskhizeine/hermes-agent-windows-R.git
+cd hermes-agent-windows-R
 ```
 
 ### 2. 创建虚拟环境
