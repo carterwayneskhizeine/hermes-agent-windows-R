@@ -119,7 +119,43 @@ hermes gateway run
 
 ---
 
-## 7. 相关文档索引
+## 7. 后续补丁：Windows 路径反斜杠塌陷 bug（同日第二轮）
+
+### 症状
+
+AI 让 `write_file_tool` 写到 `D:\Doc\20260423宫崎葵\宫崎葵介绍.md`，结果在 repo cwd 下创建了两个垃圾产物：
+- 文件 `D:Doc20260423宫崎葵宫崎葵介绍.md`（反斜杠被吃掉，整条路径塌成文件名）
+- 目录 `D:Doc20260423宫崎葵/`
+
+### 根因
+
+`tools/file_operations.py` 的 `ShellFileOperations` 把所有文件操作都打包成 shell 命令经 Git Bash 执行（`cat > {path}`、`mkdir -p {parent}` 等）。Git Bash 走 MSYS coreutils，它们把 `\` 当转义字符，`D:\Doc\…` 被 `\D`、`\2`、`\宫` 逐段吃掉，最后塌成 `D:Doc20260423宫崎葵宫崎葵介绍.md` 在 cwd 下创建。
+
+### 修复
+
+在 `ShellFileOperations._expand_path` 末尾新增一步 `_normalize_for_shell`：Windows 上把反斜杠替换为正斜杠。Git Bash / MSYS 接受 `D:/Doc/…` 形式的驱动器路径，不会触发转义。
+
+所有公开入口（read/write/delete/move/search/exists/patch）都先调用 `_expand_path`，因此单点修复全覆盖。
+
+### 验证
+
+- 单元测试：`_expand_path(r"D:\Doc\宫崎葵\x.md")` → `"D:/Doc/宫崎葵/x.md"`
+- 端到端：通过 `ShellFileOperations.write_file` 传入 backslash 路径，文件正确落到目标位置，cwd 无垃圾产物。
+- `tests/tools/test_file_tools_live.py` 有 11 个已存在的 Windows 失败（Git Bash `cat` 的 CRLF 转换问题，与本修复无关）。
+
+### 改动文件
+
+- `tools/file_operations.py` — 新增 `_normalize_for_shell` 静态方法，`_expand_path` 的 3 个返回点统一通过它归一化
+
+### 后续可能踩坑的地方
+
+- `_escape_shell_arg` 的其他入参（比如 `search_pattern`）**没有**做路径归一化——这是对的，不要顺手改。
+- 若以后新增走 shell 的文件操作，记得先过 `_expand_path`。
+- 若改用 Python 原生 `open()` / `pathlib` 做文件读写（不再经 shell），就不再需要这层归一化。
+
+---
+
+## 8. 相关文档索引
 
 - `docs/winodws_/HERMES_WINDOWS_ISSUE_REPORT.md` — 上一次会话踩到的环境问题（注：根因不是 Hermes 代码，是调用方 AI 会话的 shell bridge）
 - `docs/winodws_/WINDOWS_OPTIMIZATIONS_CHECKLIST.md` — 旧 fork 完整适配清单

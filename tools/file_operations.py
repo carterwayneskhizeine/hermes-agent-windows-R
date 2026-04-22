@@ -441,8 +441,24 @@ class ShellFileOperations(FileOperations):
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
-        
+                        return self._normalize_for_shell(user_home + suffix)
+
+        return self._normalize_for_shell(path)
+
+    @staticmethod
+    def _normalize_for_shell(path: str) -> str:
+        """Convert Windows backslash paths to forward-slash form for bash.
+
+        The shell backend runs MSYS coreutils (cat, mkdir ...) via
+        Git Bash. Those tools treat backslash as an escape character,
+        so a path like "D:\\Doc\\foo\\bar.md" gets collapsed into
+        "D:Docfoobar.md" in the repo cwd instead of reaching the
+        intended location. Git Bash / MSYS accept "D:/Doc/foo/bar.md"
+        transparently, so we normalize here before any shell escaping.
+        """
+        from tools.platform_compat import _IS_WINDOWS
+        if _IS_WINDOWS and path and "\\" in path:
+            return path.replace("\\", "/")
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
