@@ -21,6 +21,7 @@
 - [安装步骤](#安装步骤)
 - [首次配置](#首次配置)
 - [常用命令](#常用命令)
+- [Profile 多实例](#profile-多实例)
 - [故障排查](#故障排查)
 - [清理卸载](#清理卸载)
 
@@ -139,6 +140,58 @@ hermes doctor           # 诊断环境问题
 .\venv\Scripts\python.exe -m pytest tests/tools/test_windows_compat.py `
     tests/gateway/test_status.py tests/hermes_cli/test_profiles.py -v
 ```
+
+---
+
+## Profile 多实例
+
+Hermes 支持 profile 隔离，每个 profile 拥有独立的配置、记忆、会话和技能。
+
+### 创建 Profile
+
+```powershell
+hermes profile create turing --clone   # 克隆 default 配置
+```
+
+### 在 Windows 上使用 Profile
+
+`hermes profile create` 会在 `~/.local/bin/` 生成一个 bash wrapper 脚本，**该脚本在 PowerShell 中无法执行**。Windows 用户请使用以下三种方式之一：
+
+#### 方式一：`-p` 参数（推荐）
+
+```powershell
+hermes -p turing setup          # 配置 API 密钥和模型
+hermes -p turing chat           # 启动聊天
+hermes -p turing gateway run    # 启动 gateway
+hermes -p turing doctor         # 诊断
+```
+
+#### 方式二：`--profile` 长参数
+
+```powershell
+hermes --profile=turing setup
+hermes --profile=turing chat
+```
+
+#### 方式三：设为默认 profile
+
+```powershell
+hermes profile use turing       # 设为当前默认
+hermes setup                    # 等同于 hermes -p turing setup
+hermes chat                     # 等同于 hermes -p turing chat
+hermes profile use default      # 切回默认
+```
+
+### Profile 管理命令
+
+```powershell
+hermes profile list             # 列出所有 profile
+hermes profile info turing      # 查看 profile 详情
+hermes profile rename turing ada  # 重命名
+hermes profile delete turing    # 删除
+```
+
+每个 profile 的数据位于 `~/.hermes/profiles/<name>/`，包含独立的 `config.yaml`、`.env`、`SOUL.md` 等文件。
 
 ---
 
