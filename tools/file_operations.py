@@ -447,18 +447,17 @@ class ShellFileOperations(FileOperations):
 
     @staticmethod
     def _normalize_for_shell(path: str) -> str:
-        """Convert Windows backslash paths to forward-slash form for bash.
+        """Convert Windows paths to MSYS absolute form for Git Bash.
 
-        The shell backend runs MSYS coreutils (cat, mkdir ...) via
-        Git Bash. Those tools treat backslash as an escape character,
-        so a path like "D:\\Doc\\foo\\bar.md" gets collapsed into
-        "D:Docfoobar.md" in the repo cwd instead of reaching the
-        intended location. Git Bash / MSYS accept "D:/Doc/foo/bar.md"
-        transparently, so we normalize here before any shell escaping.
+        Git Bash runs MSYS coreutils that treat ``\\`` as escape chars and
+        interpret ``D:/...`` as a *relative* path (no drive-letter namespace
+        in POSIX). The only form MSYS tools accept as absolute is ``/d/...``.
+
+        ``D:\\Doc\\foo`` or ``D:/Doc/foo``  →  ``/d/Doc/foo``
         """
-        from tools.platform_compat import _IS_WINDOWS
-        if _IS_WINDOWS and path and "\\" in path:
-            return path.replace("\\", "/")
+        from tools.platform_compat import _IS_WINDOWS, windows_path_to_msys
+        if _IS_WINDOWS and path:
+            return windows_path_to_msys(path)
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:

@@ -51,6 +51,10 @@ from tools.platform_compat import (
     file_lock,                  # ctx  — fcntl.flock 或 msvcrt.locking
     get_host_temp_dir,          # Path — $TEMP/hermes
     get_host_temp_path,         # Path — $TEMP/hermes/<name>
+    windows_path_to_msys,       # str  — D:\foo / D:/foo  →  /d/foo（幂等）
+    msys_path_to_windows,       # str  — /d/foo  →  D:/foo（幂等）
+    get_powershell_exe,         # str|None — 返回 'pwsh'/'powershell'，每进程缓存
+    run_powershell,             # CompletedProcess — 安全执行 PS 脚本字符串
     _IS_WINDOWS,                # bool
 )
 ```
@@ -131,31 +135,68 @@ AI 让 `write_file_tool` 写到 `D:\Doc\20260423宫崎葵\宫崎葵介绍.md`，
 
 `tools/file_operations.py` 的 `ShellFileOperations` 把所有文件操作都打包成 shell 命令经 Git Bash 执行（`cat > {path}`、`mkdir -p {parent}` 等）。Git Bash 走 MSYS coreutils，它们把 `\` 当转义字符，`D:\Doc\…` 被 `\D`、`\2`、`\宫` 逐段吃掉，最后塌成 `D:Doc20260423宫崎葵宫崎葵介绍.md` 在 cwd 下创建。
 
-### 修复
+### 修复（第一版，已被第三轮覆盖）
 
-在 `ShellFileOperations._expand_path` 末尾新增一步 `_normalize_for_shell`：Windows 上把反斜杠替换为正斜杠。Git Bash / MSYS 接受 `D:/Doc/…` 形式的驱动器路径，不会触发转义。
-
-所有公开入口（read/write/delete/move/search/exists/patch）都先调用 `_expand_path`，因此单点修复全覆盖。
-
-### 验证
-
-- 单元测试：`_expand_path(r"D:\Doc\宫崎葵\x.md")` → `"D:/Doc/宫崎葵/x.md"`
-- 端到端：通过 `ShellFileOperations.write_file` 传入 backslash 路径，文件正确落到目标位置，cwd 无垃圾产物。
-- `tests/tools/test_file_tools_live.py` 有 11 个已存在的 Windows 失败（Git Bash `cat` 的 CRLF 转换问题，与本修复无关）。
-
-### 改动文件
-
-- `tools/file_operations.py` — 新增 `_normalize_for_shell` 静态方法，`_expand_path` 的 3 个返回点统一通过它归一化
-
-### 后续可能踩坑的地方
-
-- `_escape_shell_arg` 的其他入参（比如 `search_pattern`）**没有**做路径归一化——这是对的，不要顺手改。
-- 若以后新增走 shell 的文件操作，记得先过 `_expand_path`。
-- 若改用 Python 原生 `open()` / `pathlib` 做文件读写（不再经 shell），就不再需要这层归一化。
+~~在 `_normalize_for_shell` 里把 `\` 替换为 `/`，输出 `D:/Doc/…`。~~
+**不够**：MSYS coreutils 把 `D:/...` 当作相对路径，仍会在 cwd 下创建垃圾。
 
 ---
 
-## 8. 相关文档索引
+## 8. 后续补丁：MSYS 绝对路径修正 + 跨平台 helper（同日第三轮）
+
+### 症状
+
+`D:/Doc/foo` 被 MSYS `mkdir` 视为相对路径，在 repo cwd 下创建 `D:/Doc/foo` 目录树而非真正的 `D:\Doc\foo`。
+
+### 根因
+
+MSYS 的 POSIX 命名空间里没有驱动器字母，只认 `/d/Doc/foo` 这种形式。`D:/` 前缀在 bash 看来就是普通目录名（相对路径）。
+
+### 修复
+
+#### `tools/platform_compat.py` — 新增两个路径转换函数 + PowerShell helper
+
+```python
+windows_path_to_msys(path)   # D:\Doc\foo  →  /d/Doc/foo
+msys_path_to_windows(path)   # /d/Doc/foo  →  D:/Doc/foo
+get_powershell_exe()          # 返回 'pwsh' / 'powershell' / None（每进程缓存）
+run_powershell(script, ...)   # 封装 subprocess.run，自动选 exe，raise 友好 RuntimeError
+```
+
+`windows_path_to_msys` 同时处理反斜杠和正斜杠形式，对已经是 MSYS 格式的路径幂等。
+
+#### `tools/file_operations.py` — `_normalize_for_shell` 改用 `windows_path_to_msys`
+
+```python
+# 之前（不够）：
+return path.replace("\\", "/")   # D:\foo → D:/foo（MSYS 当相对路径）
+
+# 现在（正确）：
+from tools.platform_compat import windows_path_to_msys
+return windows_path_to_msys(path)  # D:\foo → /d/foo（MSYS 绝对路径）
+```
+
+### 验证
+
+```
+windows_path_to_msys(r"D:\Doc\foo\bar.md") == "/d/Doc/foo/bar.md"   ✓
+windows_path_to_msys("D:/Doc/foo/bar.md")  == "/d/Doc/foo/bar.md"   ✓（幂等）
+windows_path_to_msys("/d/Doc/foo")          == "/d/Doc/foo"          ✓（幂等）
+msys_path_to_windows("/d/Doc/foo")          == "D:/Doc/foo"          ✓
+run_powershell("Write-Output 'hello'").stdout == "hello\n"           ✓
+ShellFileOperations.write_file(r"D:\Doc\_test_\x.md", "…")  → 文件落到正确位置，cwd 无垃圾 ✓
+```
+
+### 后续可能踩坑的地方
+
+- `_escape_shell_arg` 的其他入参（`search_pattern` 等）**没有**经过路径归一化——这是对的，不要顺手改。
+- 若以后新增走 shell 的文件操作，记得先过 `_expand_path`。
+- 若改用 Python 原生 `open()` / `pathlib` 做文件读写（不再经 shell），就不再需要这层归一化。
+- `run_powershell` 不适合大脚本传参；大量数据应写临时文件后用 `-File` 调用。
+
+---
+
+## 9. 相关文档索引
 
 - `docs/winodws_/HERMES_WINDOWS_ISSUE_REPORT.md` — 上一次会话踩到的环境问题（注：根因不是 Hermes 代码，是调用方 AI 会话的 shell bridge）
 - `docs/winodws_/WINDOWS_OPTIMIZATIONS_CHECKLIST.md` — 旧 fork 完整适配清单
