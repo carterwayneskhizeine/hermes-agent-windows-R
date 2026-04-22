@@ -6,6 +6,15 @@
 
 ---
 
+> **特别感谢**
+>
+> 本 Windows 适配工作大量参考了 [**pengchengxia75-arch**](https://github.com/pengchengxia75-arch) 的 Windows fork：
+> [github.com/pengchengxia75-arch/hermes-agent-windows](https://github.com/pengchengxia75-arch/hermes-agent-windows)
+>
+> 感谢作者在 Windows 兼容性上所做的先行探索，本项目的适配补丁正是在其工作基础上整理而来。
+
+---
+
 ## 目录
 
 - [环境要求](#环境要求)
