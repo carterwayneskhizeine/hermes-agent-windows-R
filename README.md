@@ -102,13 +102,15 @@ hermes gateway setup
 
 ### Git Bash 路径
 
-Hermes 自动按以下顺序探测 `bash.exe`：
+Hermes 自动按以下顺序探测 `bash.exe`（已过滤 WSL 启动器）：
 
 1. 环境变量 `HERMES_GIT_BASH_PATH`
-2. `shutil.which("bash")`
-3. `%ProgramFiles%\Git\bin\bash.exe`
-4. `%ProgramFiles(x86)%\Git\bin\bash.exe`
-5. `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
+2. `%ProgramFiles%\Git\bin\bash.exe`
+3. `%ProgramFiles(x86)%\Git\bin\bash.exe`
+4. `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`
+5. `shutil.which("bash")`（跳过 `C:\Windows\System32\bash.exe` 的 WSL 启动器）
+
+> ⚠️ **不支持 WSL bash**：WSL 使用 `/mnt/d/...` 路径约定，和 Git Bash 的 `/d/...` 不兼容，会导致 `write_file` 把文件写到 WSL 内部文件系统。装了 WSL 的系统上 `shutil.which("bash")` 会优先返回 WSL 启动器，Hermes 在 Git Bash 专用路径探测之后才回退到 PATH 查找，并显式过滤掉 `System32\bash.exe`。
 
 若自动探测失败，手动指定：
 
@@ -207,6 +209,24 @@ D:\Doc\foo\bar.md  →  /d/Doc/foo/bar.md
 
 此转换在 `tools/platform_compat.py` 的 `windows_path_to_msys()` 中完成，对所有 `write_file` / `read_file` 等操作透明生效。
 
+### 会话 CWD 和临时文件
+
+`LocalEnvironment`（`tools/environments/local.py`）在 Windows 上额外处理：
+
+- 初始 CWD 经 `windows_path_to_msys()` 转为 `/d/Code/...`，确保 bash 的 `cd` 可靠
+- 会话快照 / CWD 临时文件放在 `%LOCALAPPDATA%\Temp\hermes\`（MSYS 形式 `/c/Users/.../Temp/hermes/`），bash 和 Python 都能访问
+- 同时保存 `_snapshot_path_win` / `_cwd_file_win`（Windows 形式），供 Python `open()` / `os.unlink()` 使用
+
+### 危险命令拦截
+
+`tools/approval.py` 会拦截会在 Git Bash 下卡死或误伤整个驱动器的命令：
+
+- `find /` — MSYS 把 `/` 映射到整个 Windows 根，会遍历所有驱动器
+- `find /home` — 类似问题
+- `ls -R /` — 递归列出根目录
+
+这些命令需改为指定具体路径（如 `find /d/Doc -name '*.md'`）。
+
 ### 进程管理
 
 Windows 不支持 `os.kill(pid, 0)` 和 `signal.SIGKILL`，Hermes 已使用以下替代：
@@ -240,6 +260,15 @@ Windows 不支持 `os.kill(pid, 0)` 和 `signal.SIGKILL`，Hermes 已使用以�
 ```powershell
 $env:HERMES_GIT_BASH_PATH = "C:\Program Files\Git\bin\bash.exe"
 ```
+
+**Q: `write_file` 返回成功但文件没创建？**
+
+通常是 WSL bash 抢占了 Git Bash。让 AI 运行 `terminal: command="pwd"`：
+
+- 返回 `/d/Code/...` → Git Bash（正确）
+- 返回 `/mnt/d/Code/...` → WSL bash（错误，文件会写到 WSL 内部）
+
+如果是 WSL bash，装 Git for Windows 或设 `HERMES_GIT_BASH_PATH` 指向 Git Bash，重启 `hermes gateway run`。
 
 **Q: `uv pip install` 失败？**
 

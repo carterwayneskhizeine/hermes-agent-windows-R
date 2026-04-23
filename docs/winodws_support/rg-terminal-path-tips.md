@@ -179,18 +179,19 @@ rg "关键词" /d/Doc --files | head -5
 
 **现象：** 使用 `write_file(path="D:/Doc/20260423/test.md")` 或 `patch` 工具时，文件无法创建，无错误提示但文件不存在。
 
-**原因分析：**
-- `write_file` / `patch` 工具的路径解析可能存在跨平台问题
-- Windows 路径 `D:/Doc` 或 `D:\Doc` 在工具内部可能未正确映射到实际文件系统
+**根本原因（已分析）：**
+三个问题链式导致写入失败：
+1. `LocalEnvironment.get_temp_dir()` 回退到 `/tmp`，Python 的 `open("/tmp/...")` 用 Windows 路径语义找不到 Git Bash 的 `/tmp`，导致会话 cwd 文件无法读取
+2. `self.cwd` 始终是 `os.getcwd()` 返回的 Windows 格式（`D:\Code\...`），bash 脚本里的 `cd 'D:\Code\...'` 在 Git Bash 单引号中反斜杠保留字面值，不可靠
+3. `_wrap_command` 直接把 Windows 路径嵌入 bash 脚本，没有转换为 MSYS 格式
 
-**临时解决方案：**
-1. 使用 `terminal` + Python 脚本写入文件
-2. 或通过 Telegram 对话直接输出文档内容（由用户手动复制到文件）
-
-**待解决：** 需要在 `hermes-agent-windows-R` 源码中排查 `write_file` / `patch` 的路径处理逻辑。
+**已修复（2026-04-23）：** 修改 `tools/environments/local.py` 中的 `LocalEnvironment`：
+- `__init__`：把初始 CWD 转换为 MSYS 格式（`/d/Code/...`），bash `cd` 命令可靠
+- `get_temp_dir()`：Windows 上返回 MSYS 格式的 Windows temp 目录（`/c/Users/.../AppData/Local/Temp/hermes`），bash 脚本可写入
+- 新增 `_snapshot_path_win` / `_cwd_file_win`：Windows 格式路径，供 Python `open()` / `os.unlink()` 使用
+- `_update_cwd`：用 `_cwd_file_win` 读取 cwd 文件（Python 可访问）
+- `cleanup`：用 Windows 格式路径删除临时文件
 
 ---
 
-> 💡 **提示：** 在修改源码前，建议先备份原文件，并逐步验证每个路径转换函数。
-> 
-> 📅 **下次更新：** 待 `write_file` 路径问题修复后，补充完整的源码修改方案。
+> 💡 **提示：** `write_file` 路径问题已在 `tools/environments/local.py` 中修复。
