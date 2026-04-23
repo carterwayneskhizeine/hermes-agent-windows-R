@@ -135,6 +135,12 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+    # Filesystem root traversal — hangs on Windows Git Bash because MSYS maps
+    # / to the Windows root, making these commands traverse the entire drive.
+    # Also extremely slow on Linux/macOS without a specific path target.
+    (r'\bfind\s+/(?:\s|$)', "find from filesystem root (hangs on Windows Git Bash)"),
+    (r'\bfind\s+/home(?:/\s|\s|$)', "find traversal of /home (may hang on Windows Git Bash)"),
+    (r'\bls\s+(?:-\S+\s+)*-\S*R\S*\s+/\s*$', "recursive ls of filesystem root (hangs)"),
 ]
 
 
