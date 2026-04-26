@@ -5,7 +5,7 @@
 # Hermes Agent ☤
 
 <p align="center">
-  <img src="docs/chat.jpg" alt="Hermes Chat 界面" width="100%">
+  <img src="docs/Chat.jpg" alt="Hermes Chat 界面" width="100%">
 </p>
 
 # Hermes Agent — Windows 开发版安装指南
