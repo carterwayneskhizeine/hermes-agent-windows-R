@@ -22,10 +22,12 @@
 - [安装步骤](#安装步骤)
 - [首次配置](#首次配置)
 - [常用命令](#常用命令)
-- [Dashboard Web UI（含 TUI Chat）](#dashboard-web-ui含-tui-chat)
 - [Profile 多实例](#profile-多实例)
+- [Windows 特有说明](#windows-特有说明)
 - [故障排查](#故障排查)
-- [清理卸载](#清理卸载)
+- [相关文档](#相关文档)
+- [Windows 适配变更摘要](#windows-适配变更摘要)
+- [Windows PowerShell 双 Agent 启动与管理指南](#windows-powershell-双-agent-启动与管理指南)
 
 ---
 
@@ -73,7 +75,7 @@ uv venv venv --python 3.12
 ### 4. 安装依赖
 
 ```powershell
-uv pip install -e ".[all]"
+uv pip install -e ".[all,dev]"
 ```
 
 ### 5. 启动 Gateway
@@ -327,11 +329,12 @@ winget install BurntSushi.ripgrep.MSVC
 - [前置准备](#前置准备)
 - [启动 default Agent](#启动-default-agent)
 - [启动 turing Agent](#启动-turing-agent)
-- [同时运行两个 Agent](#同时运行两个-agent)
-- [Web 仪表盘访问](#web-仪表盘访问)
+- [同时运行多个 Agent](#同时运行多个-agent)
+- [Dashboard Web UI（含 TUI Chat）](#dashboard-web-ui含-tui-chat)
 - [Agent / Profile 管理](#agent--profile-管理)
 - [常见告警](#常见告警)
 - [故障排查](#故障排查)
+- [快速参考：完整启动流程](#快速参考完整启动流程)
 
 ---
 
