@@ -148,6 +148,10 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
+#       user via `gosu`, which requires these caps. Combined with
+#       `no-new-privileges`, gosu still cannot escalate back to root after
+#       the drop, so the security posture is preserved.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
@@ -155,6 +159,8 @@ _SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
@@ -189,6 +195,7 @@ def _ensure_docker_available() -> None:
             [docker_exe, "version"],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=5,
         )
     except FileNotFoundError:
@@ -439,6 +446,7 @@ class DockerEnvironment(BaseEnvironment):
             run_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=120,  # image pull may take a while
             check=True,
         )
@@ -522,7 +530,8 @@ class DockerEnvironment(BaseEnvironment):
             docker = find_docker() or "docker"
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=10,
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -532,7 +541,8 @@ class DockerEnvironment(BaseEnvironment):
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=15,
             )
             if probe.returncode == 0:
                 # Clean up the created container

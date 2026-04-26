@@ -251,6 +251,11 @@ class HonchoClientConfig:
     # matching dialectic_depth length. When None, uses proportional defaults
     # derived from dialectic_reasoning_level.
     dialectic_depth_levels: list[str] | None = None
+    # When true, the auto-injected dialectic scales reasoning level up on
+    # longer queries. See HonchoMemoryProvider for thresholds.
+    reasoning_heuristic: bool = True
+    # Ceiling for the heuristic-selected reasoning level.
+    reasoning_level_cap: str = "high"
     # Honcho API limits — configurable for self-hosted instances
     # Max chars per message sent via add_messages() (Honcho cloud: 25000)
     message_max_chars: int = 25000
@@ -446,6 +451,16 @@ class HonchoClientConfig:
                 raw.get("dialecticDepthLevels"),
                 depth=_parse_dialectic_depth(host_block.get("dialecticDepth"), raw.get("dialecticDepth")),
             ),
+            reasoning_heuristic=_resolve_bool(
+                host_block.get("reasoningHeuristic"),
+                raw.get("reasoningHeuristic"),
+                default=True,
+            ),
+            reasoning_level_cap=(
+                host_block.get("reasoningLevelCap")
+                or raw.get("reasoningLevelCap")
+                or "high"
+            ),
             message_max_chars=int(
                 host_block.get("messageMaxChars")
                 or raw.get("messageMaxChars")
@@ -499,7 +514,8 @@ class HonchoClientConfig:
         try:
             root = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, cwd=cwd, timeout=5,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", cwd=cwd, timeout=5,
             )
             if root.returncode == 0:
                 return Path(root.stdout.strip()).name

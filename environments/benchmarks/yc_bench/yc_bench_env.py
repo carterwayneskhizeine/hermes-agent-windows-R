@@ -393,7 +393,8 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         # Verify yc-bench CLI is available
         try:
             result = subprocess.run(
-                ["yc-bench", "--help"], capture_output=True, text=True, timeout=10
+                ["yc-bench", "--help"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=10
             )
             if result.returncode != 0:
                 raise FileNotFoundError
@@ -522,7 +523,8 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
                 "--horizon-years", str(horizon),
             ]
             init_result = subprocess.run(
-                init_cmd, capture_output=True, text=True, timeout=30,
+                init_cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
             )
             if init_result.returncode != 0:
                 error_msg = (init_result.stderr or init_result.stdout).strip()

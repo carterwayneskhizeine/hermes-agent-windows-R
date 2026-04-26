@@ -1,17 +1,18 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+</p>
+
+# Hermes Agent ☤
+
+<p align="center">
+  <img src="docs/chat.jpg" alt="Hermes Chat 界面" width="100%">
+</p>
+
 # Hermes Agent — Windows 开发版安装指南
 
 本文档面向在 **Windows 原生环境**（无需 WSL）下运行 Hermes Agent 开发版的用户。
 
 > 原始英文 README 已备份至 `README_hermes.md`。
-
----
-
-> **特别感谢**
->
-> 本 Windows 适配工作大量参考了 [**pengchengxia75-arch**](https://github.com/pengchengxia75-arch) 的 Windows fork：
-> [github.com/pengchengxia75-arch/hermes-agent-windows](https://github.com/pengchengxia75-arch/hermes-agent-windows)
->
-> 感谢作者在 Windows 兼容性上所做的先行探索，本项目的适配补丁正是在其工作基础上整理而来。
 
 ---
 
@@ -21,6 +22,7 @@
 - [安装步骤](#安装步骤)
 - [首次配置](#首次配置)
 - [常用命令](#常用命令)
+- [Dashboard Web UI（含 TUI Chat）](#dashboard-web-ui含-tui-chat)
 - [Profile 多实例](#profile-多实例)
 - [故障排查](#故障排查)
 - [清理卸载](#清理卸载)
@@ -287,23 +289,501 @@ winget install BurntSushi.ripgrep.MSVC
 
 ---
 
-## 清理卸载
+## 相关文档
 
-`clear.ps1` 脚本会清除本地安装产物：
+- `docs/winodws_support/代码修改总结_2026-04-26.md` — Windows 适配代码修改详细记录
+- `docs/winodws_support/PORTING_SUMMARY_2026-04-23.md` — Windows 适配移植记录
+- `README_hermes.md` — 原始英文 README（完整功能说明）
 
-- 停止 Hermes 进程
-- 删除 `%LOCALAPPDATA%\hermes`
-- 清除 `HERMES_HOME` / `HERMES_GIT_BASH_PATH` 用户环境变量
-- 从用户 PATH 中移除旧的 Hermes 路径
+---
+
+## Windows 适配变更摘要
+
+基于上游 `093bf90b` 之后的变更（5 个提交）：
+
+| 提交 | 说明 |
+|------|------|
+| `49a73677` | fix(windows): resolve encoding crashes and add ConPTY support |
+| `a6f3ac4e` | fix(windows): improve Git Bash compatibility and path handling |
+| `62ae82a8` | refactor(subprocess): standardize encoding and error handling for subprocess calls |
+| `a7100fe1` | fix(windows): force utf-8 encoding for stdio streams |
+| `f73c6dcd` | feat(tui): implement ephemeral sessions for web chat sidebar |
+
+核心修复：
+1. **编码修复（146 处）**：全局 `subprocess` 调用添加 `encoding="utf-8", errors="replace"`，解决中文 Windows GBK 崩溃
+2. **终端输出捕获**：Windows 使用 `proc.stdout.buffer.read1()` 替代 `select.select()`，解决终端工具输出为空
+3. **stdio UTF-8**：`entry.py` / `slash_worker.py` / `transport.py` 全量 UTF-8 重配置，解决 TUI 中文输入乱码
+4. **ConPTY 支持**：`pywinpty` 实现 Windows 伪终端，Dashboard Chat 可嵌入 TUI
+5. **Ephemeral session**：侧边栏 session 不再写入数据库，避免 Sessions 页出现空「无标题会话」
+
+# Windows PowerShell 双 Agent 启动与管理指南
+
+本文档面向在 Windows 原生环境（PowerShell 7+）同时运行两个 Hermes Agent 实例（`default` 和 `turing`）的用户，涵盖 Gateway、Web 仪表盘、Profile 管理以及常见告警处理。
+
+---
+
+## 目录
+
+- [前置准备](#前置准备)
+- [启动 default Agent](#启动-default-agent)
+- [启动 turing Agent](#启动-turing-agent)
+- [同时运行两个 Agent](#同时运行两个-agent)
+- [Web 仪表盘访问](#web-仪表盘访问)
+- [Agent / Profile 管理](#agent--profile-管理)
+- [常见告警](#常见告警)
+- [故障排查](#故障排查)
+
+---
+
+## 前置准备
+
+### 激活虚拟环境
+
+每个新开的 PowerShell 窗口都需要先激活一次：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\clear.ps1
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+```
+
+激活成功后提示符前会出现 `(venv)`。
+
+> 若提示脚本执行被禁止：
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+### 确认前端已构建
+
+Web 仪表盘默认由 Python 服务器托管构建后的静态文件，位于 `hermes_cli/web_dist/`。如果是首次运行或修改了前端，请先构建：
+
+```powershell
+cd web
+npm install          # 首次安装依赖
+npm run build
+cd ..
+```
+
+此后只要不再改动前端，直接启动 Python 服务器即可，无需 `npm run dev`。
+
+---
+
+## 启动 default Agent
+
+默认 profile 对应 `~/.hermes/`（即 `C:\Users\<用户名>\.hermes\`）。
+
+### 1. 启动 Gateway（消息平台 + 定时任务）
+
+```powershell
+hermes gateway run
+```
+
+看到如下 banner 即代表成功：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│           ⚕ Hermes Gateway Starting...                 │
+├─────────────────────────────────────────────────────────┤
+│  Messaging platforms + cron scheduler                   │
+│  Press Ctrl+C to stop                                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+> 只有在配置了 Telegram / Discord / Slack 等平台时才需要 Gateway。仅用 Web UI 聊天可以不启动。
+
+### 2. 启动 Web 仪表盘（含 TUI Chat）
+
+**新开一个 PowerShell 窗口**，激活虚拟环境后：
+
+```powershell
+python -m hermes_cli.main dashboard --no-open --tui
+```
+
+参数说明：
+
+| 参数 | 说明 |
+|------|------|
+| `--no-open` | 不自动打开浏览器 |
+| `--tui` | 启用 Chat 标签页（通过 ConPTY 嵌入完整 TUI 体验） |
+
+输出：
+```
+→ Building web UI...
+  ✓ Web UI built
+  Hermes Web UI → http://127.0.0.1:9119
+```
+
+浏览器打开 `http://127.0.0.1:9119` 即可。
+
+---
+
+## 启动 turing Agent
+
+turing profile 对应 `C:\Users\<用户名>\.hermes\profiles\turing\`。
+
+### 方式一：`-p` 参数（推荐，不改默认 profile）
+
+```powershell
+hermes -p turing gateway run
+```
+
+### 方式二：通过 `HERMES_HOME` 环境变量
+
+适合 Web 仪表盘场景，因为 `dashboard` 子命令本身不支持 `-p` 参数：
+
+```powershell
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\turing"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9120
+```
+
+> **注意端口要改**（例如 9120），避免和默认 9119 冲突。
+
+输出：
+```
+Hermes Web UI → http://127.0.0.1:9120
+```
+
+> ⚠️ `$env:HERMES_HOME` 只在当前 PowerShell 会话有效。关闭窗口后失效。
+
+### 方式三：设为默认 profile
+
+```powershell
+hermes profile use turing   # 切换
+hermes gateway run          # 此时等同于 -p turing
+hermes profile use default  # 用完切回
 ```
 
 ---
 
-## 相关文档
+## 同时运行多个 Agent
 
-- `WINDOWS_SUPPORT.md` — Windows 运行模型与跨平台 helper 技术细节
-- `docs/winodws_support/PORTING_SUMMARY_2026-04-23.md` — Windows 适配移植记录
-- `README_hermes.md` — 原始英文 README（完整功能说明）
+每个 Agent 实例需要**独立的 API Server 端口**和**独立的 Telegram Bot Token**，否则会出现端口冲突或 Telegram 轮询冲突。
+
+### 配置 API Server 端口（必须）
+
+> **注意**：`port` 必须放在 `extra` 下面，不能直接写在 `api_server` 下面。
+> 这是因为 `PlatformConfig.from_dict()` 只从 `extra` 字典中读取自定义字段，
+> 扁平写法的 `port` 不会被解析，会回退到默认端口 8642。
+
+编辑各 profile 的 `config.yaml`，在文件末尾添加：
+
+```yaml
+platforms:
+  api_server:
+    extra:
+      port: 8647   # ← 每个 profile 用不同的端口
+```
+
+当前端口分配：
+
+| Profile | API Server 端口 | Dashboard 端口 | config 路径 |
+|---------|----------------|----------------|-------------|
+| default | 8647 | 9119 | `~/.hermes/config.yaml` |
+| turing  | 8641 | 9120 | `~/.hermes/profiles/turing/config.yaml` |
+| belbin  | 8645 | 9121 | `~/.hermes/profiles/belbin/config.yaml` |
+
+### 配置 Telegram Bot Token
+
+每个使用 Telegram 的 profile 必须使用**不同的 Bot Token**（通过 @BotFather 创建多个 bot）。
+在各自的 `.env` 文件中设置：
+
+```
+TELEGRAM_BOT_TOKEN=<该 profile 专属的 token>
+```
+
+同一个 token 不能被两个实例同时轮询，否则会出现 `Conflict: terminated by other getUpdates request` 错误。
+
+### 启动三个 Agent
+
+典型场景：开 6 个 PowerShell 窗口，每个窗口跑一个进程。
+
+| 窗口 | 任务 | 命令 |
+|------|------|------|
+| #1 | default Gateway | `hermes gateway run` |
+| #2 | default Dashboard（端口 9119）| `python -m hermes_cli.main dashboard --no-open --tui` |
+| #3 | turing Gateway | `hermes -p turing gateway run` |
+| #4 | turing Dashboard（端口 9120）| 见下方 |
+| #5 | belbin Gateway | `hermes -p belbin gateway run` |
+| #6 | belbin Dashboard（端口 9121）| 见下方 |
+
+**窗口 #4 的完整命令：**
+
+```powershell
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\turing"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9120
+```
+
+**窗口 #6 的完整命令：**
+
+```powershell
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\belbin"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9121
+```
+
+运行完成后：
+- default Web UI → `http://127.0.0.1:9119`
+- turing Web UI → `http://127.0.0.1:9120`
+- belbin Web UI → `http://127.0.0.1:9121`
+
+---
+
+## Dashboard Web UI（含 TUI Chat）
+
+构建好前端后，Web UI 的所有功能（Status / Sessions / Chat / Analytics / Logs / Cron / Skills / Config / Keys）直接通过 Python 服务器提供，**不需要 Vite 开发服务器**。
+
+### 何时需要 `npm run dev`
+
+只有在**修改前端源码并希望热更新**时才使用：
+
+```powershell
+cd D:\Code\goldie-fork\hermes-agent\web
+npm run dev
+```
+
+开发服务器会在 `http://localhost:5188` 启动。它需要一个后端实例作为数据源（默认指向 `http://127.0.0.1:9119`）。指向 turing：
+
+```powershell
+$env:HERMES_DASHBOARD_URL = "http://127.0.0.1:9120"
+npm run dev
+```
+
+### Chat 页面
+
+Chat 页面通过 ConPTY 在浏览器中嵌入完整 TUI 体验。使用 `--tui` 参数启动 dashboard 后访问 `/chat` 即可。
+
+功能：
+- 流式助手输出、工具调用实时显示、中断正在运行的会话
+- 斜杠命令：在输入框键入 `/` 会弹出命令列表
+- **流式输出期间发送新消息**：AI 正在回复时，输入框和发送按钮始终保持可用。发送新消息会自动中断当前输出并处理新请求，无需手动点击停止按钮
+- **模型切换斜杠语法**：使用 `/model provider/model-name` 格式快速切换模型，例如 `/model zai/glm-5.1`、`/model anthropic/claude-sonnet-4-6`，等同于 `/model model-name --provider provider`
+- **状态栏（Status Bar）**：输入框下方显示模型名称、上下文窗口大小、Token 用量（输入/输出）、API 调用次数、预估费用和上下文使用率百分比。使用率按阈值颜色编码：绿色（<50%）、黄色（50-80%）、橙色（80-95%）、红色（>95%）。点击输入框左下方的图表图标可切换显示/隐藏，偏好自动保存到 localStorage
+- **剪贴板**：支持 Ctrl+Shift+C/V 复制粘贴，点击右下角按钮复制最后一条回复
+
+> **注意**：Chat 页面仅限从 `localhost` 访问，请通过 `hermes dashboard` 启动后打开，不要直接输入 URL。
+>
+> **已修复**：中文输入/显示正常（UTF-8 编码修复）；Sessions 页面不会出现空「无标题会话」（ephemeral session 机制）。
+
+---
+
+## Agent / Profile 管理
+
+### 列出所有 Profile
+
+```powershell
+hermes profile list
+```
+
+输出示例：
+```
+ Profile      Model              Gateway      Alias
+ ───────────    ───────────────    ───────────    ────────
+ ◆default     gpt-5.4            stopped      —
+  turing      MiniMax-M2.7       stopped      turing
+```
+
+### 创建 Profile
+
+```powershell
+hermes profile create <名字> --clone   # 克隆 default 配置
+hermes profile create <名字>           # 从空白开始
+```
+
+Profile 目录位于 `C:\Users\<用户名>\.hermes\profiles\<名字>\`，包含独立的 `config.yaml`、`.env`、`SOUL.md`、`state.db` 等。
+
+### 查看 Profile 详情
+
+```powershell
+hermes profile show turing
+```
+
+### 重命名 / 删除
+
+```powershell
+hermes profile rename turing ada
+hermes profile delete turing
+```
+
+> 删除操作会要求确认。Profile 目录下的所有数据（会话历史、技能、配置）都会被清除。
+
+### 配置模型 / API Key
+
+针对指定 profile 配置：
+
+```powershell
+hermes -p turing model        # 切换 LLM 模型
+hermes -p turing setup        # 交互式配置 API key
+hermes -p turing tools        # 管理工具开关
+hermes -p turing doctor       # 诊断环境问题
+hermes -p turing config set terminal.cwd "D:\Code\your-project"
+```
+
+### 切换默认 Profile
+
+```powershell
+hermes profile use turing     # 设为默认
+hermes profile use default    # 切回
+```
+
+---
+
+## 常见告警
+
+### ⚠ TERMINAL_CWD 在 .env 中已废弃
+
+启动时可能看到：
+
+```
+⚠ Deprecated .env settings detected:
+  ⚠ TERMINAL_CWD=D:\Code\goldie-fork\hermes-agent found in .env — this is deprecated.
+  Move to config.yaml instead:  terminal:
+    cwd: /your/project/path
+  Then remove the old entries from C:\Users\gotmo\.hermes\profiles\turing/.env
+```
+
+**含义：** Hermes 早期版本用 `.env` 里的 `TERMINAL_CWD` 指定 Agent 执行命令的默认工作目录。新版本改为通过 `config.yaml` 的 `terminal.cwd` 字段来配置，更统一、更结构化。
+
+**解决步骤（针对 turing profile）：**
+
+#### 1. 写入 `config.yaml`
+
+最简单的方式：
+
+```powershell
+hermes -p turing config set terminal.cwd "D:\Code\goldie-fork\hermes-agent"
+```
+
+或手动编辑 `C:\Users\gotmo\.hermes\profiles\turing\config.yaml`，新增：
+
+```yaml
+terminal:
+  cwd: D:\Code\goldie-fork\hermes-agent
+```
+
+> 路径使用 Windows 绝对路径即可。`tools/platform_compat.py` 内部会自动转成 `/d/Code/...` 的 MSYS 形式传给 Git Bash。
+
+#### 2. 从 `.env` 移除旧条目
+
+用编辑器打开 `C:\Users\gotmo\.hermes\profiles\turing\.env`，删除这一行：
+
+```
+TERMINAL_CWD=D:\Code\goldie-fork\hermes-agent
+```
+
+#### 3. 重启 Agent
+
+关闭正在运行的 dashboard / gateway 后重新启动，告警就会消失。
+
+> 对 default profile 同理，只是路径是 `C:\Users\<用户名>\.hermes\.env` 和 `config.yaml`。
+
+---
+
+## 故障排查
+
+Vite 开发服务器的 WebSocket 代理已在 `web/vite.config.ts` 中配置，启动前请确保对应的 dashboard 正在运行。
+
+### Q: API Server 端口 8642 冲突 / `Port already in use`？
+
+多 profile 同时运行时，每个 profile 的 API Server 必须用不同端口。在 `config.yaml` 中设置：
+
+```yaml
+platforms:
+  api_server:
+    extra:
+      port: 8645   # 每个 profile 不同
+```
+
+> `port` **必须**放在 `extra` 下面。直接写 `api_server.port` 不会被解析，会始终回退到默认的 8642。
+
+如果端口仍然被旧进程占用，先终止：
+
+```powershell
+# 查找占用端口的进程
+netstat -ano | findstr 8642
+taskkill /PID <pid> /F
+```
+
+### Q: Dashboard 端口 9119 已被占用？
+
+```powershell
+# 查找占用端口的进程
+Get-NetTCPConnection -LocalPort 9119 | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Get-Process -Id $_ }
+
+# 终止
+taskkill /PID <pid> /F
+```
+
+或直接换端口：`--port 9121`。
+
+### Q: `HERMES_HOME` 设错了怎么办？
+
+```powershell
+$env:HERMES_HOME = $null     # 清除当前会话的环境变量
+```
+
+或直接关闭 PowerShell 窗口重开。全局设置（非临时）需在"系统属性 → 环境变量"中修改。
+
+### Q: Web UI 显示 "Frontend not built"？
+
+```powershell
+cd D:\Code\goldie-fork\hermes-agent\web
+npm run build
+```
+
+构建产物会输出到 `D:\Code\goldie-fork\hermes-agent\hermes_cli\web_dist\`。
+
+### Q: `hermes` 命令找不到？
+
+虚拟环境未激活。执行：
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+提示符出现 `(venv)` 后再试。
+
+---
+
+## 快速参考：完整启动流程
+
+```powershell
+# ── 窗口 1：default Gateway ──
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+hermes gateway run
+
+# ── 窗口 2：default Web UI（含 TUI Chat）──
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui
+# → http://127.0.0.1:9119
+
+# ── 窗口 3：turing Gateway ──
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+hermes -p turing gateway run
+
+# ── 窗口 4：turing Web UI ──
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\turing"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9120
+# → http://127.0.0.1:9120
+
+# ── 窗口 5：belbin Gateway ──
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+hermes -p belbin gateway run
+
+# ── 窗口 6：belbin Web UI ──
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\belbin"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9121
+# → http://127.0.0.1:9121
+```

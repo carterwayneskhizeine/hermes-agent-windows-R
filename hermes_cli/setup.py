@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -89,20 +90,20 @@ _DEFAULT_PROVIDER_MODELS = {
         "grok-code-fast-1",
     ],
     "gemini": [
-        "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-        "gemma-4-31b-it", "gemma-4-26b-it",
+        "gemini-3.1-pro-preview", "gemini-3-pro-preview",
+        "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
     "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
-    "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "kimi-coding-cn": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
+    "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
-    "opencode-go": ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.5", "minimax-m2.7"],
+    "opencode-go": ["kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5", "qwen3.6-plus", "qwen3.5-plus"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -408,13 +409,36 @@ def _print_setup_summary(config: dict, hermes_home):
             ("Browser Automation", False, missing_browser_hint)
         )
 
-    # FAL (image generation)
+    # Image generation — FAL (direct or via Nous), or any plugin-registered
+    # provider (OpenAI, etc.)
     if subscription_features.image_gen.managed_by_nous:
         tool_status.append(("Image Generation (Nous subscription)", True, None))
     elif subscription_features.image_gen.available:
         tool_status.append(("Image Generation", True, None))
     else:
-        tool_status.append(("Image Generation", False, "FAL_KEY"))
+        # Fall back to probing plugin-registered providers so OpenAI-only
+        # setups don't show as "missing FAL_KEY".
+        _img_backend = None
+        try:
+            from agent.image_gen_registry import list_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            for _p in list_providers():
+                if _p.name == "fal":
+                    continue
+                try:
+                    if _p.is_available():
+                        _img_backend = _p.display_name
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if _img_backend:
+            tool_status.append((f"Image Generation ({_img_backend})", True, None))
+        else:
+            tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
 
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
@@ -430,9 +454,10 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
     elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
         tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
+    elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
+        tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
     elif tts_provider == "neutts":
         try:
-            import importlib.util
             neutts_ok = importlib.util.find_spec("neutts") is not None
         except Exception:
             neutts_ok = False
@@ -440,6 +465,16 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "kittentts":
+        try:
+            import importlib.util
+            kittentts_ok = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            kittentts_ok = False
+        if kittentts_ok:
+            tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -464,6 +499,15 @@ def _print_setup_summary(config: dict, hermes_home):
     # Home Assistant
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
+
+    # Spotify (OAuth via hermes auth spotify — check auth.json, not env vars)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        _spotify_state = get_provider_auth_state("spotify") or {}
+        if _spotify_state.get("access_token") or _spotify_state.get("refresh_token"):
+            tool_status.append(("Spotify (PKCE OAuth)", True, None))
+    except Exception:
+        pass
 
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
@@ -770,6 +814,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "kimi-coding-cn": "Kimi / Moonshot (China)",
+            "stepfun": "StepFun Step Plan",
             "minimax": "MiniMax",
             "minimax-cn": "MiniMax CN",
             "anthropic": "Anthropic",
@@ -802,7 +847,8 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         elif _vision_idx == 1:  # OpenAI-compatible endpoint
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             _api_key_label = "  API key"
-            if "api.openai.com" in _base_url.lower():
+            _is_native_openai = base_url_hostname(_base_url) == "api.openai.com"
+            if _is_native_openai:
                 _api_key_label = "  OpenAI API key"
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
@@ -810,7 +856,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 # Save vision base URL to config (not .env — only secrets go there)
                 _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
                 _vaux["base_url"] = _base_url
-                if "api.openai.com" in _base_url.lower():
+                if _is_native_openai:
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                     _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
                     _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
@@ -846,7 +892,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 def _check_espeak_ng() -> bool:
     """Check if espeak-ng is installed."""
-    import shutil
     return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
@@ -900,6 +945,31 @@ def _install_neutts_deps() -> bool:
         return False
 
 
+def _install_kittentts_deps() -> bool:
+    """Install KittenTTS dependencies with user approval. Returns True on success."""
+    import subprocess
+    import sys
+
+    wheel_url = (
+        "https://github.com/KittenML/KittenTTS/releases/download/"
+        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+    )
+    print()
+    print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
+    print()
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
+            check=True, timeout=300,
+        )
+        print_success("kittentts installed successfully")
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print_error(f"Failed to install kittentts: {e}")
+        print_info(f"Try manually: python -m pip install -U '{wheel_url}' soundfile")
+        return False
+
+
 def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for NeuTTS."""
     tts_config = config.get("tts", {})
@@ -913,7 +983,9 @@ def _setup_tts_provider(config: dict):
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
+        "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
+        "kittentts": "KittenTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
 
@@ -935,10 +1007,12 @@ def _setup_tts_provider(config: dict):
             "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
+            "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
+            "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -959,7 +1033,6 @@ def _setup_tts_provider(config: dict):
     if selected == "neutts":
         # Check if already installed
         try:
-            import importlib.util
             already_installed = importlib.util.find_spec("neutts") is not None
         except Exception:
             already_installed = False
@@ -1045,6 +1118,42 @@ def _setup_tts_provider(config: dict):
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
 
+    elif selected == "gemini":
+        existing = get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+        if not existing:
+            print()
+            print_info("Get a free API key at https://aistudio.google.com/app/apikey")
+            api_key = prompt("Gemini API key for TTS", password=True)
+            if api_key:
+                save_env_value("GEMINI_API_KEY", api_key)
+                print_success("Gemini TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "kittentts":
+        # Check if already installed
+        try:
+            import importlib.util
+            already_installed = importlib.util.find_spec("kittentts") is not None
+        except Exception:
+            already_installed = False
+
+        if already_installed:
+            print_success("KittenTTS is already installed")
+        else:
+            print()
+            print_info("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).")
+            print_info("Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+            print()
+            if prompt_yes_no("Install KittenTTS now?", True):
+                if not _install_kittentts_deps():
+                    print_warning("KittenTTS installation incomplete. Falling back to Edge TTS.")
+                    selected = "edge"
+            else:
+                print_info("Skipping install. Set tts.provider to 'kittentts' after installing manually.")
+                selected = "edge"
+
     # Save the selection
     if "tts" not in config:
         config["tts"] = {}
@@ -1066,8 +1175,6 @@ def setup_tts(config: dict):
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
     import platform as _platform
-    import shutil
-
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
@@ -1248,12 +1355,14 @@ def setup_terminal_backend(config: dict):
                         ],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8", errors="replace",
                     )
                 else:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "modal"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8", errors="replace",
                     )
                 if result.returncode == 0:
                     print_success("modal SDK installed")
@@ -1303,12 +1412,14 @@ def setup_terminal_backend(config: dict):
                     [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8", errors="replace",
                 )
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "daytona"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8", errors="replace",
                 )
             if result.returncode == 0:
                 print_success("daytona SDK installed")
@@ -1384,7 +1495,7 @@ def setup_terminal_backend(config: dict):
                 ssh_cmd.extend(["-p", port])
             ssh_cmd.append(f"{user}@{host}" if user else host)
             ssh_cmd.append("echo ok")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             if result.returncode == 0:
                 print_success("  SSH connection successful!")
             else:
@@ -1444,7 +1555,9 @@ def setup_agent_settings(config: dict):
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
+    print_info(
+        f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
+    )
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
@@ -1846,11 +1959,13 @@ def _setup_matrix():
                 result = subprocess.run(
                     [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
                     capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                 )
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", matrix_pkg],
                     capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                 )
             if result.returncode == 0:
                 print_success(f"{matrix_pkg} installed")
@@ -1988,52 +2103,6 @@ def _setup_wecom_callback():
     _gw_setup()
 
 
-def _setup_qqbot():
-    """Configure QQ Bot gateway."""
-    print_header("QQ Bot")
-    existing = get_env_value("QQ_APP_ID")
-    if existing:
-        print_info("QQ Bot: already configured")
-        if not prompt_yes_no("Reconfigure QQ Bot?", False):
-            return
-
-    print_info("Connects Hermes to QQ via the Official QQ Bot API (v2).")
-    print_info("   Requires a QQ Bot application at q.qq.com")
-    print_info("   Reference: https://bot.q.qq.com/wiki/develop/api-v2/")
-    print()
-
-    app_id = prompt("QQ Bot App ID")
-    if not app_id:
-        print_warning("App ID is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_APP_ID", app_id.strip())
-
-    client_secret = prompt("QQ Bot App Secret", password=True)
-    if not client_secret:
-        print_warning("App Secret is required — skipping QQ Bot setup")
-        return
-    save_env_value("QQ_CLIENT_SECRET", client_secret)
-    print_success("QQ Bot credentials saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can DM your bot")
-    print_info("   Use QQ user OpenIDs (found in event payloads)")
-    print()
-    allowed_users = prompt("Allowed user OpenIDs (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("QQ_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("QQ Bot allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set — anyone can DM the bot!")
-
-    print()
-    print_info("📬 Home Channel: OpenID for cron job delivery and notifications.")
-    home_channel = prompt("Home channel OpenID (leave empty to set later)")
-    if home_channel:
-        save_env_value("QQ_HOME_CHANNEL", home_channel)
-
-    print()
-    print_success("QQ Bot configured!")
 
 
 def _setup_bluebubbles():
@@ -2102,12 +2171,9 @@ def _setup_bluebubbles():
 
 
 def _setup_qqbot():
-    """Configure QQ Bot (Official API v2) via standard platform setup."""
-    from hermes_cli.gateway import _PLATFORMS
-    qq_platform = next((p for p in _PLATFORMS if p["key"] == "qqbot"), None)
-    if qq_platform:
-        from hermes_cli.gateway import _setup_standard_platform
-        _setup_standard_platform(qq_platform)
+    """Configure QQ Bot (Official API v2) via gateway setup."""
+    from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
+    _gateway_setup_qqbot()
 
 
 def _setup_webhooks():
@@ -2247,7 +2313,9 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
-        if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
+        if get_env_value("QQ_APP_ID") and not (
+            get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
+        ):
             missing_home.append("QQBot")
 
         if missing_home:
@@ -2272,13 +2340,16 @@ def setup_gateway(config: dict):
             _is_service_running,
             supports_systemd_services,
             has_conflicting_systemd_units,
+            has_legacy_hermes_units,
             install_linux_gateway_from_setup,
             print_systemd_scope_conflict_warning,
+            print_legacy_unit_warning,
             systemd_start,
             systemd_restart,
             launchd_install,
             launchd_start,
             launchd_restart,
+            UserSystemdUnavailableError,
         )
 
         service_installed = _is_service_installed()
@@ -2291,6 +2362,10 @@ def setup_gateway(config: dict):
             print_systemd_scope_conflict_warning()
             print()
 
+        if supports_systemd and has_legacy_hermes_units():
+            print_legacy_unit_warning()
+            print()
+
         if service_running:
             if prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
@@ -2298,6 +2373,10 @@ def setup_gateway(config: dict):
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Restart failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except Exception as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
@@ -2307,6 +2386,10 @@ def setup_gateway(config: dict):
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Start failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
         elif supports_service_manager:
@@ -2330,6 +2413,10 @@ def setup_gateway(config: dict):
                                 systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
+                        except UserSystemdUnavailableError as e:
+                            print_error("  Start failed — user systemd not reachable:")
+                            for line in str(e).splitlines():
+                                print(f"  {line}")
                         except Exception as e:
                             print_error(f"  Start failed: {e}")
                 except Exception as e:
@@ -2381,6 +2468,74 @@ def setup_tools(config: dict, first_install: bool = False):
 # =============================================================================
 
 
+def _model_section_has_credentials(config: dict) -> bool:
+    """Return True when any known inference provider has usable credentials.
+
+    Sources of truth:
+      * ``PROVIDER_REGISTRY`` in ``hermes_cli.auth`` — lists every supported
+        provider along with its ``api_key_env_vars``.
+      * ``active_provider`` in the auth store — covers OAuth device-code /
+        external-OAuth providers (Nous, Codex, Qwen, Gemini CLI, ...).
+      * The legacy OpenRouter aggregator env vars, which route generic
+        ``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY`` values through OpenRouter.
+    """
+    try:
+        from hermes_cli.auth import get_active_provider
+        if get_active_provider():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        PROVIDER_REGISTRY = {}  # type: ignore[assignment]
+
+    def _has_key(pconfig) -> bool:
+        for env_var in pconfig.api_key_env_vars:
+            # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
+            # the user — mirrors is_provider_explicitly_configured in auth.py.
+            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
+                continue
+            if get_env_value(env_var):
+                return True
+        return False
+
+    # Prefer the provider declared in config.yaml, avoids false positives
+    # from stray env vars (GH_TOKEN, etc.) when the user has already picked
+    # a different provider.
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    if isinstance(model_cfg, dict):
+        provider_id = (model_cfg.get("provider") or "").strip().lower()
+        if provider_id in PROVIDER_REGISTRY:
+            if _has_key(PROVIDER_REGISTRY[provider_id]):
+                return True
+        if provider_id == "openrouter":
+            for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+                if get_env_value(env_var):
+                    return True
+
+    # OpenRouter aggregator fallback (no provider declared in config).
+    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if get_env_value(env_var):
+            return True
+
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        # Skip copilot in auto-detect: GH_TOKEN / GITHUB_TOKEN are
+        # commonly set for git tooling.  Mirrors resolve_provider in auth.py.
+        if pid == "copilot":
+            continue
+        if _has_key(pconfig):
+            return True
+    return False
+
+
+def _gateway_platform_short_label(label: str) -> str:
+    """Strip trailing parenthetical qualifiers from a gateway platform label."""
+    base = label.split("(", 1)[0].strip()
+    return base or label
+
+
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
     """Return a short summary if a setup section is already configured, else None.
 
@@ -2389,20 +2544,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
     so that test patches on ``setup_mod.get_env_value`` take effect.
     """
     if section_key == "model":
-        has_key = bool(
-            get_env_value("OPENROUTER_API_KEY")
-            or get_env_value("OPENAI_API_KEY")
-            or get_env_value("ANTHROPIC_API_KEY")
-        )
-        if not has_key:
-            # Check for OAuth providers
-            try:
-                from hermes_cli.auth import get_active_provider
-                if get_active_provider():
-                    has_key = True
-            except Exception:
-                pass
-        if not has_key:
+        if not _model_section_has_credentials(config):
             return None
         model = config.get("model")
         if isinstance(model, str) and model.strip():
@@ -2420,37 +2562,11 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        platforms = []
-        if get_env_value("TELEGRAM_BOT_TOKEN"):
-            platforms.append("Telegram")
-        if get_env_value("DISCORD_BOT_TOKEN"):
-            platforms.append("Discord")
-        if get_env_value("SLACK_BOT_TOKEN"):
-            platforms.append("Slack")
-        if get_env_value("SIGNAL_ACCOUNT"):
-            platforms.append("Signal")
-        if get_env_value("EMAIL_ADDRESS"):
-            platforms.append("Email")
-        if get_env_value("TWILIO_ACCOUNT_SID"):
-            platforms.append("SMS")
-        if get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD"):
-            platforms.append("Matrix")
-        if get_env_value("MATTERMOST_TOKEN"):
-            platforms.append("Mattermost")
-        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
-            platforms.append("WhatsApp")
-        if get_env_value("DINGTALK_CLIENT_ID"):
-            platforms.append("DingTalk")
-        if get_env_value("FEISHU_APP_ID"):
-            platforms.append("Feishu")
-        if get_env_value("WECOM_BOT_ID"):
-            platforms.append("WeCom")
-        if get_env_value("WEIXIN_ACCOUNT_ID"):
-            platforms.append("Weixin")
-        if get_env_value("BLUEBUBBLES_SERVER_URL"):
-            platforms.append("BlueBubbles")
-        if get_env_value("WEBHOOK_ENABLED"):
-            platforms.append("Webhooks")
+        platforms = [
+            _gateway_platform_short_label(label)
+            for label, env_var, _ in _GATEWAY_PLATFORMS
+            if get_env_value(env_var)
+        ]
         if platforms:
             return ", ".join(platforms)
         return None  # No platforms configured — section must run

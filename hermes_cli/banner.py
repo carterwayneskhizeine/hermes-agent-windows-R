@@ -165,6 +165,7 @@ def check_for_updates() -> Optional[int]:
         result = subprocess.run(
             ["git", "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -199,6 +200,8 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
             ["git", "rev-parse", "--short=8", rev],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
@@ -227,6 +230,8 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             ["git", "rev-list", "--count", "origin/main..HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             cwd=str(repo_dir),
         )
@@ -236,6 +241,54 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
         ahead = 0
 
     return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+
+_RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
+_latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
+
+
+def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
+    """Return ``(tag, release_url)`` for the latest git tag, or None.
+
+    Local-only — runs ``git describe --tags --abbrev=0`` against the
+    Hermes checkout. Cached per-process. Release URL always points at the
+    canonical NousResearch/hermes-agent repo (forks don't get a link).
+    """
+    global _latest_release_cache
+    if _latest_release_cache is not None:
+        return _latest_release_cache or None
+
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        _latest_release_cache = ()  # falsy sentinel — skip future lookups
+        return None
+
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        _latest_release_cache = ()
+        return None
+
+    if result.returncode != 0:
+        _latest_release_cache = ()
+        return None
+
+    tag = (result.stdout or "").strip()
+    if not tag:
+        _latest_release_cache = ()
+        return None
+
+    url = f"{_RELEASE_URL_BASE}/{tag}"
+    _latest_release_cache = (tag, url)
+    return _latest_release_cache
 
 
 def format_banner_version_label() -> str:
@@ -519,9 +572,16 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     agent_name = _skin_branding("agent_name", "Hermes Agent")
     title_color = _skin_color("banner_title", "#FFD700")
     border_color = _skin_color("banner_border", "#CD7F32")
+    version_label = format_banner_version_label()
+    release_info = get_latest_release_tag()
+    if release_info:
+        _tag, _url = release_info
+        title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
+    else:
+        title_markup = f"[bold {title_color}]{version_label}[/]"
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {title_color}]{format_banner_version_label()}[/]",
+        title=title_markup,
         border_style=border_color,
         padding=(0, 2),
     )

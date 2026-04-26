@@ -66,7 +66,8 @@ def _detect_openclaw_processes() -> list[str]:
         try:
             result = subprocess.run(
                 ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=5,
             )
             if result.stdout.strip() == "active":
                 found.append("systemd service: openclaw-gateway.service")
@@ -79,7 +80,8 @@ def _detect_openclaw_processes() -> list[str]:
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=5,
                 )
                 if exe in result.stdout.lower():
                     found.append(f"process: {exe}")
@@ -93,7 +95,8 @@ def _detect_openclaw_processes() -> list[str]:
             )
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=5,
             )
             if result.stdout.strip():
                 found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")
@@ -103,7 +106,8 @@ def _detect_openclaw_processes() -> list[str]:
         try:
             result = subprocess.run(
                 ["pgrep", "-f", "openclaw"],
-                capture_output=True, text=True, timeout=3,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=3,
             )
             if result.returncode == 0:
                 pids = result.stdout.strip().split()
@@ -249,7 +253,7 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
             state_path = child / state_name
             if state_path.exists():
                 kind = "directory" if state_path.is_dir() else "file"
-                rel = state_path.relative_to(source_dir)
+                rel = state_path.relative_to(source_dir).as_posix()
                 findings.append((state_path, f"Workspace {kind}: {rel}"))
 
     return findings

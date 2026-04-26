@@ -78,6 +78,7 @@ def git(*args, cwd=None):
         ["git"] + list(args),
         capture_output=True,
         text=True,
+        encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -103,6 +104,7 @@ def gh_pr_list():
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=60,
         )
         if result.returncode != 0:
