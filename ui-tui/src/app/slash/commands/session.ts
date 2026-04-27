@@ -1,7 +1,6 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   BackgroundStartResponse,
-  BtwStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
   ImageAttachResponse,
@@ -16,9 +15,17 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
+const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
+
+const persistedModelArg = (arg: string) => {
+  const trimmed = arg.trim()
+
+  return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
+}
+
 export const sessionCommands: SlashCommand[] = [
   {
-    aliases: ['bg'],
+    aliases: ['bg', 'btw'],
     help: 'launch a background prompt',
     name: 'background',
     run: (arg, ctx) => {
@@ -40,23 +47,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'by-the-way follow-up',
-    name: 'btw',
-    run: (arg, ctx) => {
-      if (!arg) {
-        return ctx.transcript.sys('/btw <question>')
-      }
-
-      ctx.gateway.rpc<BtwStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded(() => {
-          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add('btw:x') }))
-          ctx.transcript.sys('btw running…')
-        })
-      )
-    }
-  },
-
-  {
     help: 'change or show model',
     aliases: ['provider'],
     name: 'model',
@@ -65,25 +55,27 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      if (!arg) {
+      if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: arg.trim() }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return ctx.transcript.sys('error: invalid response: model switch')
-          }
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: persistedModelArg(arg) })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return ctx.transcript.sys('error: invalid response: model switch')
+            }
 
-          ctx.transcript.sys(`model → ${r.value}`)
-          ctx.local.maybeWarn(r)
+            ctx.transcript.sys(`model → ${r.value}`)
+            ctx.local.maybeWarn(r)
 
-          patchUiState(state => ({
-            ...state,
-            info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-          }))
-        })
-      )
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+            }))
+          })
+        )
     }
   },
 

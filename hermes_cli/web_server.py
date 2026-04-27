@@ -287,7 +287,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",
-        "options": ["interrupt", "queue"],
+        "options": ["interrupt", "queue", "steer"],
     },
     "memory.provider": {
         "type": "select",
@@ -2328,6 +2328,7 @@ def _resolve_chat_argv(
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
+    env.setdefault("NODE_ENV", "production")
 
     # Ensure the TUI's Node child_process spawns the *same* Python that
     # runs the dashboard.  Without this, the TUI may pick up a different
@@ -2337,6 +2338,7 @@ def _resolve_chat_argv(
 
     if resume:
         env["HERMES_TUI_RESUME"] = resume
+
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
