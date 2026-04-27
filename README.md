@@ -750,6 +750,37 @@ npm run build
 
 提示符出现 `(venv)` 后再试。
 
+### Q: `Gateway runtime lock is already held by another instance` — 如何解除？
+
+这个错误说明已有一个 gateway 实例持有锁，新启动的实例被拒绝。**不一定是 stale 锁**，需先确认原进程是否还在运行。
+
+**第一步：查看 PID 文件，找到持锁进程**
+
+```powershell
+Get-Content "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.pid"
+# 输出示例：{"pid": 31820, "kind": "hermes-gateway", ...}
+```
+
+**第二步：确认该进程是否还在运行**
+
+```powershell
+Get-Process -Id 31820 -ErrorAction SilentlyContinue
+```
+
+- **有输出** → 原进程仍在运行（正常锁），按需终止后再重启：
+  ```powershell
+  Stop-Process -Id 31820 -Force
+  hermes -p <profile名> gateway run
+  ```
+- **无输出** → 原进程已死，但锁文件未被清理（stale 锁）。直接删除后重启：
+  ```powershell
+  Remove-Item "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.lock" -Force
+  Remove-Item "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.pid" -Force
+  hermes -p <profile名> gateway run
+  ```
+
+> `gateway.pid` 路径根据当前 profile 而定：default profile 在 `C:\Users\gotmo\.hermes\gateway.pid`，其他 profile 在 `C:\Users\gotmo\.hermes\profiles\<name>\gateway.pid`。
+
 ---
 
 ## 快速参考：完整启动流程
