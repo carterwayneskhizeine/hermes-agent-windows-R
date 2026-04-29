@@ -765,16 +765,50 @@ npm run build
 
 ### Q: `Gateway runtime lock is already held by another instance` — 如何解除？
 
-这个错误说明已有一个 gateway 实例持有锁，新启动的实例被拒绝。**不一定是 stale 锁**，需先确认原进程是否还在运行。
+这个错误说明已有一个 gateway 实例持有锁。**最常见的原因不是 stale 锁，而是当前活跃 profile 不对**——你想启动的 profile 的 gateway 其实已经在跑了，或者你在错误的 profile 上操作。
 
-**第一步：查看 PID 文件，找到持锁进程**
+**第一步：确认当前活跃 profile（◆ 标记）**
+
+```powershell
+hermes profile list
+```
+
+输出示例：
+```
+ Profile    Gateway
+ ─────────    ───────────
+  default   stopped
+ ◆mem        running     ← 当前活跃 profile 是 mem，它的 gateway 在运行
+  turing    stopped
+```
+
+**情况 A：活跃 profile 不对（最常见）**
+
+你本来想启动 `default` 的 gateway，但活跃 profile 是 `mem`，所以 `hermes gateway run` 试图在 `mem` 上再开一个，被已有实例拒绝。
+
+解决：切换到目标 profile 再启动：
+
+```powershell
+hermes profile use default
+hermes gateway run
+```
+
+或者不改默认 profile，直接用 `-p` 参数：
+
+```powershell
+hermes -p default gateway run
+```
+
+**情况 B：profile 正确，但锁文件是 stale 的（进程已死）**
+
+查看 PID 文件：
 
 ```powershell
 Get-Content "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.pid"
 # 输出示例：{"pid": 31820, "kind": "hermes-gateway", ...}
 ```
 
-**第二步：确认该进程是否还在运行**
+确认该进程是否还在运行：
 
 ```powershell
 Get-Process -Id 31820 -ErrorAction SilentlyContinue
@@ -785,7 +819,7 @@ Get-Process -Id 31820 -ErrorAction SilentlyContinue
   Stop-Process -Id 31820 -Force
   hermes -p <profile名> gateway run
   ```
-- **无输出** → 原进程已死，但锁文件未被清理（stale 锁）。直接删除后重启：
+- **无输出** → 原进程已死（stale 锁）。删除锁文件后重启：
   ```powershell
   Remove-Item "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.lock" -Force
   Remove-Item "C:\Users\gotmo\.hermes\profiles\<profile名>\gateway.pid" -Force

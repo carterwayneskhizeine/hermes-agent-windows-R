@@ -198,7 +198,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             if resolved:
                 parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
                 if resolved_is_explicit:
-                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                    chat_id = parsed_chat_id
+                    if parsed_thread_id is not None:
+                        thread_id = parsed_thread_id
                 else:
                     chat_id = resolved
         except Exception:
@@ -823,6 +825,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    agent = None
+
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
     # scheduler process — every job this process runs is a cron job.
@@ -1171,6 +1175,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Release subprocesses, terminal sandboxes, browser daemons, and the
+        # main OpenAI/httpx client held by this ephemeral cron agent. Without
+        # this, a gateway that ticks cron every N minutes leaks fds per job
+        # until it hits EMFILE (#10200 / "too many open files").
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them
+        # so their transports don't accumulate in the process-global cache.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:

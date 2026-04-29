@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -253,11 +253,59 @@ class _SlashWorker:
                 pass
 
 
-atexit.register(
-    lambda: [
-        s.get("slash_worker") and s["slash_worker"].close() for s in _sessions.values()
-    ]
-)
+def _load_busy_input_mode() -> str:
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("busy_input_mode", "") or "").strip().lower()
+    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+
+
+def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
+    """Fire session lifecycle hooks with CLI parity."""
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(event_type, session_id=session_id, platform="tui")
+    except Exception:
+        pass
+
+
+def _finalize_session(session: dict | None) -> None:
+    """Best-effort finalize hook + memory commit for a session."""
+    if not session or session.get("_finalized"):
+        return
+    session["_finalized"] = True
+
+    agent = session.get("agent")
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            history = list(session.get("history", []))
+    else:
+        history = list(session.get("history", []))
+    if agent is not None and history and hasattr(agent, "commit_memory_session"):
+        try:
+            agent.commit_memory_session(history)
+        except Exception:
+            pass
+
+    session_id = getattr(agent, "session_id", None) or session.get("session_key")
+    _notify_session_boundary("on_session_finalize", session_id)
+
+
+def _shutdown_sessions() -> None:
+    for session in list(_sessions.values()):
+        _finalize_session(session)
+        try:
+            worker = session.get("slash_worker")
+            if worker:
+                worker.close()
+        except Exception:
+            pass
+
+
+atexit.register(_shutdown_sessions)
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -443,6 +491,13 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 # ── Config I/O ────────────────────────────────────────────────────────
+
+
+# Keep aligned with `INDICATOR_STYLES` / `DEFAULT_INDICATOR_STYLE` in
+# ``ui-tui/src/app/interfaces.ts`` — both ends validate against the
+# same shape so `config.get indicator` and the live TUI render agree.
+_INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
+_INDICATOR_DEFAULT = "kaomoji"
 
 
 def _load_cfg() -> dict:
@@ -637,6 +692,21 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
+def _display_mouse_tracking(display: dict) -> bool:
+    """Return canonical display.mouse_tracking with legacy tui_mouse fallback."""
+    if not isinstance(display, dict):
+        return True
+    if "mouse_tracking" in display:
+        raw = display.get("mouse_tracking")
+    else:
+        raw = display.get("tui_mouse", True)
+    if raw is False or raw == 0:
+        return False
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "no", "off"}
+    return True
+
+
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
@@ -761,8 +831,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     custom_provs = None
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
+
         cfg = load_config()
-        user_provs = [{"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()]
+        user_provs = [
+            {"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()
+        ]
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass
@@ -794,14 +867,19 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
     os.environ["HERMES_MODEL"] = result.new_model
     os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
-    # Keep the process-level provider env var in sync with the user's explicit
-    # choice so any ambient re-resolution (credential pool refresh, compressor
-    # rebuild, aux clients) resolves to the new provider instead of the
-    # original one persisted in config or env.
+    # Keep the process-level provider env vars in sync with the user's
+    # explicit choice so any ambient re-resolution (credential pool refresh,
+    # compressor rebuild, aux clients) and startup re-resolution on /new
+    # both pick up the new provider instead of the original one persisted
+    # in config or env.
+    #
+    # HERMES_TUI_PROVIDER is the canonical "explicit-this-process" carrier
+    # consumed by _resolve_startup_runtime() — set it unconditionally on
+    # /model so /new can't fall through to static-catalog detection and
+    # pick a coincidentally-matching native provider (fixes #16857).
     if result.target_provider:
         os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
-        if os.environ.get("HERMES_TUI_PROVIDER"):
-            os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
+        os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}
@@ -920,7 +998,10 @@ def _probe_config_health(cfg: dict) -> str:
 def _session_info(agent) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
-    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is not False:
+    if (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("enabled") is not False
+    ):
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
@@ -1044,7 +1125,11 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if _tool_progress_enabled(sid):
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit("tool.start", sid, {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)})
+        _emit(
+            "tool.start",
+            sid,
+            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
+        )
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1412,6 +1497,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     except Exception:
         pass
     _wire_callbacks(sid)
+    _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))
 
 
@@ -1534,6 +1620,7 @@ def _(rid, params: dict) -> dict:
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "pending_title": None,
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
@@ -1571,6 +1658,42 @@ def _(rid, params: dict) -> dict:
             db = _get_db()
             if db is not None and not ephemeral:
                 db.create_session(key, source="tui", model=_resolve_model())
+                pending_title = (session.get("pending_title") or "").strip()
+                if pending_title:
+                    try:
+                        title_applied = db.set_session_title(key, pending_title)
+                        if title_applied:
+                            session["pending_title"] = None
+                        else:
+                            existing_row = db.get_session(key)
+                            existing_title = (
+                                (existing_row or {}).get("title") or ""
+                            ).strip()
+                            if existing_title == pending_title:
+                                session["pending_title"] = None
+                            else:
+                                logger.info(
+                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
+                                    sid,
+                                    pending_title,
+                                    existing_title,
+                                )
+                    except ValueError as e:
+                        # Queued title can become invalid/duplicate between queue time
+                        # and DB row creation. Drop the queue and log the reason so
+                        # future /title reads don't surface a stuck pending value.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            sid,
+                            e,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to apply pending title for session %s",
+                            sid,
+                            exc_info=True,
+                        )
             session["agent"] = agent
 
             try:
@@ -1594,6 +1717,7 @@ def _(rid, params: dict) -> dict:
                 pass
 
             _wire_callbacks(sid)
+            _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent)
             warn = _probe_credentials(agent)
@@ -1690,6 +1814,50 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5006, str(e))
 
 
+@method("session.most_recent")
+def _(rid, params: dict) -> dict:
+    """Return the most recent human-facing session id, or ``None``.
+
+    Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
+    sub-agent rows).  Used by TUI auto-resume when
+    ``display.tui_auto_resume_recent`` is on; the field is also handy
+    for any CLI tooling that wants "latest session" without paginating
+    the full list.
+
+    Contract: a ``{"session_id": null}`` result means "no eligible
+    session found right now".  Errors are also folded into that
+    null-result shape (and logged) so callers don't have to special-
+    case JSON-RPC error envelopes for what is a normal "no answer".
+    """
+    db = _get_db()
+    if db is None:
+        return _ok(rid, {"session_id": None})
+    try:
+        deny = frozenset({"tool"})
+        # Over-fetch by a generous bounded amount so heavy sub-agent
+        # users (lots of recent ``tool`` rows) don't get a false
+        # "no eligible session" answer.  ``session.list`` uses a
+        # similar over-fetch strategy.
+        rows = db.list_sessions_rich(source=None, limit=200)
+        for row in rows:
+            src = (row.get("source") or "").strip().lower()
+            if src in deny:
+                continue
+            return _ok(
+                rid,
+                {
+                    "session_id": row.get("id"),
+                    "title": row.get("title") or "",
+                    "started_at": row.get("started_at") or 0,
+                    "source": row.get("source") or "",
+                },
+            )
+        return _ok(rid, {"session_id": None})
+    except Exception:
+        logger.exception("session.most_recent failed")
+        return _ok(rid, {"session_id": None})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -1710,7 +1878,9 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        display_history = db.get_messages_as_conversation(
+            target, include_ancestors=True
+        )
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -1740,12 +1910,57 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5007)
-    title, key = params.get("title", ""), session["session_key"]
+    key = session["session_key"]
+    if "title" not in params:
+        fallback = session.get("pending_title") or ""
+        try:
+            resolved_title = db.get_session_title(key) or ""
+            if fallback:
+                if db.set_session_title(key, fallback):
+                    session["pending_title"] = None
+                    resolved_title = fallback
+                else:
+                    existing_row = db.get_session(key)
+                    existing_title = ((existing_row or {}).get("title") or "").strip()
+                    if existing_title == fallback:
+                        session["pending_title"] = None
+                        resolved_title = fallback
+                    elif not resolved_title:
+                        resolved_title = fallback
+            elif resolved_title:
+                session["pending_title"] = None
+        except Exception:
+            resolved_title = fallback
+        return _ok(
+            rid,
+            {
+                "title": resolved_title,
+                "session_key": key,
+            },
+        )
+    title = (params.get("title", "") or "").strip()
     if not title:
-        return _ok(rid, {"title": db.get_session_title(key) or "", "session_key": key})
+        return _err(rid, 4021, "title required")
     try:
-        db.set_session_title(key, title)
-        return _ok(rid, {"title": title})
+        if db.set_session_title(key, title):
+            session["pending_title"] = None
+            return _ok(rid, {"pending": False, "title": title})
+        # rowcount == 0 can mean "same value" as well as "missing row".
+        # Queue only when the session row truly does not exist yet.
+        existing_row = db.get_session(key)
+        if existing_row:
+            session["pending_title"] = None
+            return _ok(
+                rid,
+                {
+                    "pending": False,
+                    "title": (existing_row.get("title") or title),
+                },
+            )
+        session["pending_title"] = title
+        return _ok(rid, {"pending": True, "title": title})
+    except ValueError as e:
+        return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
 
@@ -1765,7 +1980,9 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is not None and session.get("session_key"):
         try:
-            history = db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
+            )
         except Exception:
             pass
     return _ok(
@@ -1868,6 +2085,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
+    _finalize_session(session)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -2266,6 +2484,7 @@ def _(rid, params: dict) -> dict:
                     getattr(agent, "model", "") or _resolve_model(),
                     base_url=getattr(agent, "base_url", "") or "",
                     api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
                 )
                 ctx = preprocess_context_references(
                     prompt,
@@ -2285,7 +2504,60 @@ def _(rid, params: dict) -> dict:
                     return
                 prompt = ctx.message
 
-            prompt = _enrich_with_attached_images(prompt, images) if images else prompt
+            # Decide image routing per-turn based on active provider/model.
+            # "native" → pass pixels to the main model as OpenAI-style content
+            # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
+            # "text"   → pre-analyze with vision_analyze and prepend the text.
+            # See agent/image_routing.py for the full decision table.
+            run_message: Any = prompt
+            if images:
+                try:
+                    from agent.image_routing import (
+                        decide_image_input_mode,
+                        build_native_content_parts,
+                    )
+                    from agent.auxiliary_client import (
+                        _read_main_model,
+                        _read_main_provider,
+                    )
+                    from hermes_cli.config import load_config as _tui_load_config
+
+                    _cfg = _tui_load_config()
+                    _mode = decide_image_input_mode(
+                        _read_main_provider(),
+                        _read_main_model(),
+                        _cfg,
+                    )
+                except Exception as _img_exc:
+                    print(
+                        f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
+                        file=sys.stderr,
+                    )
+                    _mode = "text"
+
+                if _mode == "native":
+                    try:
+                        _parts, _skipped = build_native_content_parts(
+                            prompt,
+                            images,
+                        )
+                        if _skipped:
+                            print(
+                                f"[tui_gateway] native image attachment skipped {len(_skipped)} unreadable path(s)",
+                                file=sys.stderr,
+                            )
+                        if any(p.get("type") == "image_url" for p in _parts):
+                            run_message = _parts
+                        else:
+                            run_message = _enrich_with_attached_images(prompt, images)
+                    except Exception as _img_exc:
+                        print(
+                            f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
+                            file=sys.stderr,
+                        )
+                        run_message = _enrich_with_attached_images(prompt, images)
+                else:
+                    run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
                 payload = {"text": delta}
@@ -2294,7 +2566,7 @@ def _(rid, params: dict) -> dict:
                 _emit("message.delta", sid, payload)
 
             result = agent.run_conversation(
-                prompt,
+                run_message,
                 conversation_history=list(history),
                 stream_callback=_stream,
             )
@@ -2689,6 +2961,75 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5001, str(e))
 
+    if key == "fast":
+        raw = str(value or "").strip().lower()
+        agent = session.get("agent") if session else None
+        if agent is not None:
+            current_fast = getattr(agent, "service_tier", None) == "priority"
+        else:
+            current_fast = _load_service_tier() == "priority"
+
+        if raw in {"status"}:
+            return _ok(
+                rid,
+                {"key": key, "value": "fast" if current_fast else "normal"},
+            )
+
+        if raw in ("", "toggle"):
+            nv = "normal" if current_fast else "fast"
+        elif raw in {"fast", "on"}:
+            nv = "fast"
+        elif raw in {"normal", "off"}:
+            nv = "normal"
+        else:
+            return _err(rid, 4002, f"unknown fast mode: {value}")
+
+        overrides = None
+        if nv == "fast":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            target_model = (
+                getattr(agent, "model", None) if agent is not None else _resolve_model()
+            )
+            if not target_model:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available without a selected model",
+                )
+            overrides = resolve_fast_mode_overrides(target_model)
+            if overrides is None:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available for this model",
+                )
+
+        _write_config_key("agent.service_tier", nv)
+        if agent is not None:
+            agent.service_tier = "priority" if nv == "fast" else None
+            current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            current_overrides.pop("service_tier", None)
+            current_overrides.pop("speed", None)
+            if nv == "fast":
+                current_overrides.update(overrides)
+            agent.request_overrides = current_overrides
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _session_info(agent),
+            )
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "busy":
+        raw = str(value or "").strip().lower()
+        if raw in ("", "status"):
+            return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
+        if raw not in {"queue", "steer", "interrupt"}:
+            return _err(rid, 4002, f"unknown busy mode: {value}")
+        _write_config_key("display.busy_input_mode", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "verbose":
         cycle = ["off", "new", "all", "verbose"]
         cur = (
@@ -2857,8 +3198,9 @@ def _(rid, params: dict) -> dict:
 
     if key == "mouse":
         raw = str(value or "").strip().lower()
-        display = _load_cfg().get("display") if isinstance(_load_cfg().get("display"), dict) else {}
-        current = bool(display.get("tui_mouse", True))
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        current = _display_mouse_tracking(display)
 
         if raw in ("", "toggle"):
             nv = not current
@@ -2869,8 +3211,21 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4002, f"unknown mouse value: {value}")
 
-        _write_config_key("display.tui_mouse", nv)
+        _write_config_key("display.mouse_tracking", nv)
         return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+
+    if key == "indicator":
+        # Use an explicit None check rather than `value or ""` so falsy
+        # non-string inputs (0, False, []) still surface as themselves
+        # in the error message instead of looking like a blank value.
+        raw = ("" if value is None else str(value)).strip().lower()
+        if raw not in _INDICATOR_STYLES:
+            return _err(
+                rid, 4002,
+                f"unknown indicator: {raw!r}; pick one of {'|'.join(_INDICATOR_STYLES)}",
+            )
+        _write_config_key("display.tui_status_indicator", raw)
+        return _ok(rid, {"key": key, "value": raw})
 
     if key in ("prompt", "personality", "skin"):
         try:
@@ -2942,6 +3297,18 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}
         )
+    if key == "indicator":
+        # Normalize so a hand-edited config.yaml with stray casing or
+        # an unknown value reads back the SAME value the TUI actually
+        # rendered (frontend's `normalizeIndicatorStyle` falls back to
+        # `_INDICATOR_DEFAULT` for the same inputs).  Otherwise
+        # `/indicator` would print one thing while the UI shows another.
+        raw = (_load_cfg().get("display") or {}).get("tui_status_indicator", "")
+        norm = str(raw).strip().lower()
+        return _ok(
+            rid,
+            {"value": norm if norm in _INDICATOR_STYLES else _INDICATOR_DEFAULT},
+        )
     if key == "personality":
         return _ok(
             rid,
@@ -2958,6 +3325,21 @@ def _(rid, params: dict) -> dict:
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
+    if key == "fast":
+        return _ok(
+            rid,
+            {
+                "value": (
+                    "fast"
+                    if (session := _sessions.get(params.get("session_id", "")))
+                    and getattr(session.get("agent"), "service_tier", None)
+                    == "priority"
+                    else ("fast" if _load_service_tier() == "priority" else "normal")
+                ),
+            },
+        )
+    if key == "busy":
+        return _ok(rid, {"value": _load_busy_input_mode()})
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
@@ -3002,7 +3384,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mouse":
         display = _load_cfg().get("display")
-        on = display.get("tui_mouse", True) if isinstance(display, dict) else True
+        on = _display_mouse_tracking(display)
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
@@ -3071,6 +3453,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
+    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -3725,7 +4108,9 @@ def _details_completion_item(value: str, meta: str = "") -> dict:
     return {"text": value, "display": value, "meta": meta}
 
 
-def _details_root_completion_item(value: str, meta: str, needs_leading_space: bool) -> dict:
+def _details_root_completion_item(
+    value: str, meta: str, needs_leading_space: bool
+) -> dict:
     return _details_completion_item(
         f" {value}" if needs_leading_space else value,
         meta,
@@ -3740,7 +4125,7 @@ def _details_completions(text: str) -> list[dict] | None:
     if stripped and not "/details".startswith(stripped.lower().split()[0]):
         return None
 
-    body = text[len("/details"):]
+    body = text[len("/details") :]
     if body.startswith(" "):
         body = body[1:]
     parts = body.split()
@@ -3751,12 +4136,18 @@ def _details_completions(text: str) -> list[dict] | None:
     if not body or (len(parts) == 0 and has_trailing_space):
         return [
             *[
-                _details_root_completion_item(mode, "global mode", not has_trailing_space)
+                _details_root_completion_item(
+                    mode, "global mode", not has_trailing_space
+                )
                 for mode in modes
             ],
-            _details_root_completion_item("cycle", "cycle global mode", not has_trailing_space),
+            _details_root_completion_item(
+                "cycle", "cycle global mode", not has_trailing_space
+            ),
             *[
-                _details_root_completion_item(section, "section override", not has_trailing_space)
+                _details_root_completion_item(
+                    section, "section override", not has_trailing_space
+                )
                 for section in sections
             ],
         ]
@@ -3770,9 +4161,7 @@ def _details_completions(text: str) -> list[dict] | None:
                 (
                     "section override"
                     if candidate in sections
-                    else "cycle global mode"
-                    if candidate == "cycle"
-                    else "global mode"
+                    else "cycle global mode" if candidate == "cycle" else "global mode"
                 ),
             )
             for candidate in candidates
@@ -3781,7 +4170,10 @@ def _details_completions(text: str) -> list[dict] | None:
 
     if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
         return [
-            *[_details_completion_item(mode, f"set {parts[0].lower()}") for mode in modes],
+            *[
+                _details_completion_item(mode, f"set {parts[0].lower()}")
+                for mode in modes
+            ],
             _details_completion_item("reset", f"clear {parts[0].lower()} override"),
         ]
 
@@ -3790,7 +4182,11 @@ def _details_completions(text: str) -> list[dict] | None:
         return [
             _details_completion_item(
                 candidate,
-                f"clear {parts[0].lower()} override" if candidate == "reset" else f"set {parts[0].lower()}",
+                (
+                    f"clear {parts[0].lower()} override"
+                    if candidate == "reset"
+                    else f"set {parts[0].lower()}"
+                ),
             )
             for candidate in (*modes, "reset")
             if candidate.startswith(prefix) and candidate != prefix
@@ -3841,6 +4237,11 @@ def _(rid, params: dict) -> dict:
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
             },
+            {
+                "text": "/mouse",
+                "display": "/mouse",
+                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+            },
         ]
         for extra in extras:
             if extra["text"].startswith(text_lower) and not any(
@@ -3876,6 +4277,7 @@ def _(rid, params: dict) -> dict:
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        current_base_url = getattr(agent, "base_url", "") or ""
         # list_authenticated_providers already populates each provider's
         # "models" with the curated list (same source as `hermes model` and
         # classic CLI's /model picker). Do NOT overwrite with live
@@ -3884,6 +4286,8 @@ def _(rid, params: dict) -> dict:
         # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
             user_providers=(
                 cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
             ),
@@ -3975,10 +4379,6 @@ def _(rid, params: dict) -> dict:
 
     # Skill slash commands and _pending_input commands must NOT go through the
     # slash worker — see _PENDING_INPUT_COMMANDS definition above.
-    # (/browser connect/disconnect also uses _pending_input for context
-    # notes, but the actual browser operations need the slash worker's
-    # env-var side effects, so they stay in slash.exec — only the context
-    # note to the model is lost, which is low-severity.)
     _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
     _cmd_base = _cmd_parts[0] if _cmd_parts else ""
 
@@ -4333,12 +4733,51 @@ def _(rid, params: dict) -> dict:
 # ── Methods: browser / plugins / cron / skills ───────────────────────
 
 
+def _resolve_browser_cdp_url() -> str:
+    """Return the configured browser CDP override without network I/O.
+
+    ``/browser status`` must be fast — calling
+    ``tools.browser_tool._get_cdp_override`` would invoke
+    ``_resolve_cdp_override``, which performs an HTTP probe to
+    ``.../json/version`` for discovery-style URLs.  That probe has
+    a multi-second timeout and would block the TUI on a slow or
+    unreachable host even though status only needs to report whether
+    an override is set.
+
+    Mirrors the env/config precedence of ``_get_cdp_override`` (env
+    var first, then ``browser.cdp_url`` from config.yaml) without the
+    websocket-resolution step, so the answer reflects user intent
+    even when the configured host is not currently reachable.  The
+    actual WS normalization happens in ``browser_navigate`` on the
+    next tool call.
+    """
+    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_url:
+        return env_url
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
     if action == "status":
-        url = os.environ.get("BROWSER_CDP_URL", "")
-        return _ok(rid, {"connected": bool(url), "url": url})
+        resolved_url = _resolve_browser_cdp_url()
+        return _ok(
+            rid,
+            {
+                "connected": bool(resolved_url),
+                "url": resolved_url,
+            },
+        )
     if action == "connect":
         url = params.get("url", "http://localhost:9222")
         try:
@@ -4349,34 +4788,95 @@ def _(rid, params: dict) -> dict:
             parsed = urlparse(url if "://" in url else f"http://{url}")
             if parsed.scheme not in {"http", "https", "ws", "wss"}:
                 return _err(rid, 4015, f"unsupported browser url: {url}")
-            probe_root = f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
-            probe_urls = [
-                f"{probe_root.rstrip('/')}/json/version",
-                f"{probe_root.rstrip('/')}/json",
-            ]
-            ok = False
-            for probe in probe_urls:
-                try:
-                    with urllib.request.urlopen(probe, timeout=2.0) as resp:
-                        if 200 <= getattr(resp, "status", 200) < 300:
-                            ok = True
-                            break
-                except Exception:
-                    continue
-            if not ok:
-                return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
-            os.environ["BROWSER_CDP_URL"] = url
+            # A concrete ``ws[s]://.../devtools/browser/<id>`` endpoint is
+            # already directly connectable — those are the URLs Browserbase
+            # / browserless / hosted CDP providers return, and they
+            # generally DON'T serve the discovery-style ``/json/version``
+            # path.  Probing it would just reject valid endpoints.  Skip
+            # the HTTP probe and do a TCP-level reachability check instead;
+            # the actual CDP handshake happens on the next ``browser_navigate``.
+            is_concrete_ws = (
+                parsed.scheme in {"ws", "wss"}
+                and parsed.path.startswith("/devtools/browser/")
+            )
+            if is_concrete_ws:
+                import socket
+
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+                if not host:
+                    return _err(rid, 4015, f"missing host in browser url: {url}")
+                try:
+                    with socket.create_connection((host, port), timeout=2.0):
+                        pass
+                except OSError as e:
+                    return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
+            else:
+                probe_root = f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
+                probe_urls = [
+                    f"{probe_root.rstrip('/')}/json/version",
+                    f"{probe_root.rstrip('/')}/json",
+                ]
+                ok = False
+                for probe in probe_urls:
+                    try:
+                        with urllib.request.urlopen(probe, timeout=2.0) as resp:
+                            if 200 <= getattr(resp, "status", 200) < 300:
+                                ok = True
+                                break
+                    except Exception:
+                        continue
+                if not ok:
+                    return _err(rid, 5031, f"could not reach browser CDP at {url}")
+
+            # Persist a normalized URL for downstream CDP resolution.
+            # Discovery-style inputs (`http://host:port` or
+            # `http://host:port/json[/version]`) collapse to bare
+            # ``scheme://host:port`` so ``_resolve_cdp_override`` can
+            # safely append ``/json/version`` without producing a
+            # double-discovery path like ``.../json/json/version``.
+            # Concrete websocket endpoints (``/devtools/browser/<id>``
+            # — what Browserbase and other cloud providers return)
+            # are preserved verbatim.
+            if parsed.path.startswith("/devtools/browser/"):
+                normalized = parsed.geturl()
+            else:
+                normalized = parsed._replace(
+                    path="",
+                    params="",
+                    query="",
+                    fragment="",
+                ).geturl()
+
+            # Order matters: clear any cached browser sessions BEFORE
+            # publishing the new env var so an in-flight tool call
+            # observing the old supervisor is reaped first, and the
+            # next call freshly resolves the new URL.  The previous
+            # ordering left a brief window where ``_ensure_cdp_supervisor``
+            # could re-attach to the *old* supervisor.
+            cleanup_all_browsers()
+            os.environ["BROWSER_CDP_URL"] = normalized
+            # Drain any further cached state that could outlive the
+            # cleanup pass (CDP supervisor for the default task,
+            # cached agent-browser timeouts, etc.) so the next
+            # ``browser_navigate`` definitively reaches ``normalized``.
             cleanup_all_browsers()
         except Exception as e:
             return _err(rid, 5031, str(e))
-        return _ok(rid, {"connected": True, "url": url})
+        return _ok(rid, {"connected": True, "url": normalized})
     if action == "disconnect":
-        os.environ.pop("BROWSER_CDP_URL", None)
         try:
             from tools.browser_tool import cleanup_all_browsers
 
             cleanup_all_browsers()
+        except Exception:
+            pass
+        os.environ.pop("BROWSER_CDP_URL", None)
+        try:
+            from tools.browser_tool import cleanup_all_browsers as _again
+
+            _again()
         except Exception:
             pass
         return _ok(rid, {"connected": False})
@@ -4674,7 +5174,11 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from tools.skills_hub import GitHubAuth, create_source_router, unified_search
+            from tools.skills_hub import (
+                GitHubAuth,
+                create_source_router,
+                unified_search,
+            )
 
             raw = (
                 unified_search(
