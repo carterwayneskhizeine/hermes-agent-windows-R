@@ -476,17 +476,17 @@ hermes profile use default  # 用完切回
 platforms:
   api_server:
     extra:
-      port: 8647   # ← 每个 profile 用不同的端口
+      port: 8651   # ← 每个 profile 用不同的端口
 ```
 
 当前端口分配：
 
 | Profile | API Server 端口 | Dashboard 端口 | config 路径 |
 |---------|----------------|----------------|-------------|
-| default | 8647 | 9119 | `~/.hermes/config.yaml` |
-| turing  | 8641 | 9120 | `~/.hermes/profiles/turing/config.yaml` |
-| belbin  | 8645 | 9121 | `~/.hermes/profiles/belbin/config.yaml` |
-| mem     | 8649 | 9122 | `~/.hermes/profiles/mem/config.yaml` |
+| default | 8651 | 9119 | `~/.hermes/config.yaml` |
+| turing  | 8652 | 9120 | `~/.hermes/profiles/turing/config.yaml` |
+| belbin  | 8653 | 9121 | `~/.hermes/profiles/belbin/config.yaml` |
+| mem     | 8654 | 9122 | `~/.hermes/profiles/mem/config.yaml` |
 
 ### 配置 Telegram Bot Token
 

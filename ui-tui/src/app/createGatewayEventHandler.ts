@@ -282,6 +282,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus(p.text)
 
+        if (p.kind === 'compressing') {
+          sys(p.text)
+          return
+        }
+
         if (!p.kind || p.kind === 'status') {
           return
         }
@@ -303,6 +308,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const line = String(ev.payload.line).slice(0, 120)
 
         turnController.pushActivity(line, 'info')
+
+        return
+      }
+
+      case 'browser.progress': {
+        const message = String(ev.payload?.message ?? '').trim()
+
+        if (message) {
+          sys(message)
+        }
 
         return
       }
