@@ -487,6 +487,7 @@ platforms:
 | turing  | 8652 | 9120 | `~/.hermes/profiles/turing/config.yaml` |
 | belbin  | 8653 | 9121 | `~/.hermes/profiles/belbin/config.yaml` |
 | mem     | 8654 | 9122 | `~/.hermes/profiles/mem/config.yaml` |
+| goldie  | 8655 | 9123 | `~/.hermes/profiles/goldie/config.yaml` |
 
 ### 配置 Telegram Bot Token
 
@@ -513,6 +514,8 @@ TELEGRAM_BOT_TOKEN=<该 profile 专属的 token>
 | #6 | belbin Dashboard（端口 9121）| 见下方 |
 | #7 | mem Gateway | `hermes -p mem gateway run` |
 | #8 | mem Dashboard（端口 9122）| 见下方 |
+| #9 | goldie Gateway | `hermes -p goldie gateway run` |
+| #10| goldie Dashboard（端口 9123）| 见下方 |
 
 **窗口 #4 的完整命令：**
 
@@ -532,7 +535,7 @@ cd D:\Code\goldie-fork\hermes-agent
 python -m hermes_cli.main dashboard --no-open --tui --port 9121
 ```
 
-**窗口 #7 的完整命令：**
+**窗口 #8 的完整命令：**
 
 ```powershell
 $env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\mem"
@@ -541,11 +544,21 @@ cd D:\Code\goldie-fork\hermes-agent
 python -m hermes_cli.main dashboard --no-open --tui --port 9122
 ```
 
+**窗口 #10 的完整命令：**
+
+```powershell
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\goldie"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9123
+```
+
 运行完成后：
 - default Web UI → `http://127.0.0.1:9119`
 - turing Web UI → `http://127.0.0.1:9120`
 - belbin Web UI → `http://127.0.0.1:9121`
 - mem Web UI → `http://127.0.0.1:9122`
+- goldie Web UI → `http://127.0.0.1:9123`
 
 ---
 
@@ -879,4 +892,16 @@ cd D:\Code\goldie-fork\hermes-agent
 .\venv\Scripts\Activate.ps1
 python -m hermes_cli.main dashboard --no-open --tui --port 9122
 # → http://127.0.0.1:9122
+
+# ── 窗口 9：goldie Gateway ──
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+hermes -p goldie gateway run
+
+# ── 窗口 10：goldie Web UI ──
+$env:HERMES_HOME = "C:\Users\gotmo\.hermes\profiles\goldie"
+cd D:\Code\goldie-fork\hermes-agent
+.\venv\Scripts\Activate.ps1
+python -m hermes_cli.main dashboard --no-open --tui --port 9123
+# → http://127.0.0.1:9123
 ```
