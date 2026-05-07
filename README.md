@@ -2,6 +2,10 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
+<p align="center">
+  <img src="docs/Chat.jpg" alt="Hermes Chat 界面" width="100%">
+</p>
+
 # Hermes Agent — Windows 开发版
 
 这是面向 Windows 原生环境的 Hermes Agent 开发版 fork，重点修复 Windows 下的编码、Git Bash 路径、TUI、Dashboard Chat 和多 profile 运行体验。
