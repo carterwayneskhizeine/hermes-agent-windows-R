@@ -1,5 +1,6 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
+import logging
 import os
 import platform
 import shutil
@@ -11,6 +12,35 @@ import time
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_safe_cwd(cwd: str) -> str:
+    """Return ``cwd`` if it exists as a directory, else the nearest existing
+    ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
+    path can't find any existing directory (effectively never on a healthy
+    filesystem, but cheap belt-and-braces).
+
+    Used by ``_run_bash`` to recover when the configured cwd is gone — most
+    commonly because a previous tool call deleted its own working directory
+    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
+    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
+    terminal call until the gateway restarts.
+    """
+    if cwd and os.path.isdir(cwd):
+        return cwd
+    parent = os.path.dirname(cwd) if cwd else ""
+    while parent:
+        if os.path.isdir(parent):
+            return parent
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            # Reached the filesystem root and it doesn't exist either —
+            # genuinely nothing to fall back to except the temp dir.
+            break
+        parent = next_parent
+    return tempfile.gettempdir()
 
 
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
@@ -413,11 +443,32 @@ class LocalEnvironment(BaseEnvironment):
 
         # On Windows self.cwd is in MSYS form (/d/...) for bash, but Python's
         # Popen needs a Windows-form path (D:/...) — convert before passing.
+        # We also need the Windows-form path to do the existence check below,
+        # because os.path.isdir on Windows can't resolve MSYS-style paths.
         if _IS_WINDOWS:
-            from tools.platform_compat import msys_path_to_windows
+            from tools.platform_compat import msys_path_to_windows, windows_path_to_msys
             popen_cwd = msys_path_to_windows(self.cwd)
         else:
             popen_cwd = self.cwd
+
+        # Recover when the cwd has been deleted out from under us — usually by
+        # a previous tool call that ran ``rm -rf`` on its own working dir
+        # (issue #17558).  Popen would otherwise raise FileNotFoundError on
+        # the cwd before bash starts, wedging every subsequent call until the
+        # gateway restarts.
+        safe_popen_cwd = _resolve_safe_cwd(popen_cwd)
+        if safe_popen_cwd != popen_cwd:
+            logger.warning(
+                "LocalEnvironment cwd %r is missing on disk; "
+                "falling back to %r so terminal commands keep working.",
+                self.cwd,
+                safe_popen_cwd,
+            )
+            popen_cwd = safe_popen_cwd
+            # Keep self.cwd consistent with the Popen cwd (in MSYS form on Windows).
+            self.cwd = (
+                windows_path_to_msys(safe_popen_cwd) if _IS_WINDOWS else safe_popen_cwd
+            )
 
         proc = subprocess.Popen(
             args,
@@ -513,13 +564,19 @@ class LocalEnvironment(BaseEnvironment):
                 pass
 
     def _update_cwd(self, result: dict):
-        """Read CWD from temp file (local-only, no round-trip needed)."""
+        """Read CWD from temp file (local-only, no round-trip needed).
+
+        Skip the assignment when the path no longer exists as a directory —
+        ``pwd -P`` on a deleted cwd can leave a stale value in the marker
+        file, and propagating it would re-wedge the next ``Popen``.  The
+        ``_run_bash`` recovery path will resolve a safe fallback if needed.
+        """
         try:
             # Use the Windows-form path so Python's open() finds the file
             # (bash wrote MSYS-form, but Python doesn't understand /d/...).
             with open(self._cwd_file_win) as f:
                 cwd_path = f.read().strip()
-            if cwd_path:
+            if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
             pass

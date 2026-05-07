@@ -38,6 +38,7 @@ except ImportError:
 
 try:
     from microsoft_teams.apps import App, ActivityContext
+    from microsoft_teams.common.http.client import ClientOptions
     from microsoft_teams.api import MessageActivity, ConversationReference
     from microsoft_teams.api.activities.typing import TypingActivityInput
     from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
@@ -57,6 +58,7 @@ try:
     TEAMS_SDK_AVAILABLE = True
 except ImportError:
     TEAMS_SDK_AVAILABLE = False
+    ClientOptions = None  # type: ignore[assignment,misc]
     App = None  # type: ignore[assignment,misc]
     ActivityContext = None  # type: ignore[assignment,misc]
     MessageActivity = None  # type: ignore[assignment,misc]
@@ -208,6 +210,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 client_secret=self._client_secret,
                 tenant_id=self._tenant_id,
                 http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
+                client=ClientOptions(headers={"User-Agent": "Hermes"}),
             )
 
             # Register message handler before initialize()
@@ -506,7 +509,20 @@ class TeamsAdapter(BasePlatformAdapter):
 
         for chunk in chunks:
             try:
-                result = await self._app.send(chat_id, chunk)
+                if reply_to and reply_to.isdigit() and reply_to != "0":
+                    try:
+                        result = await self._app.reply(chat_id, reply_to, chunk)
+                    except Exception as reply_err:
+                        # Group chats 400 on threaded sends; the Teams SDK
+                        # doesn't expose typed HTTP errors, so fall back on
+                        # any exception and log for diagnostics.
+                        logger.debug(
+                            "Teams reply() failed, falling back to flat send: %s",
+                            reply_err,
+                        )
+                        result = await self._app.send(chat_id, chunk)
+                else:
+                    result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
@@ -589,6 +605,8 @@ def interactive_setup() -> None:
     from hermes_cli.config import (
         get_env_value,
         save_env_value,
+    )
+    from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_info,

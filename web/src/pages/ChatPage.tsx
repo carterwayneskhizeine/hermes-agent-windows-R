@@ -22,7 +22,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Button, Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -146,8 +147,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
-  const resumeRef = useRef<string | null>(searchParams.get("resume"));
+  const routeResumeId = searchParams.get("resume");
   const channel = useMemo(() => generateChannelId(), []);
+  // Keep the PTY lazy until /chat is first shown, then preserve it across
+  // dashboard navigation so switching pages does not spawn replacement TUIs.
+  const [chatActivated, setChatActivated] = useState(isActive);
+  const [ptyResumeId, setPtyResumeId] = useState<string | null>(() =>
+    isActive ? routeResumeId : null,
+  );
+  if (isActive && !chatActivated) {
+    setChatActivated(true);
+  }
+  if (isActive && ptyResumeId !== routeResumeId) {
+    setPtyResumeId(routeResumeId);
+  }
+  const shouldConnectPty = chatActivated || isActive;
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -232,6 +246,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    if (!shouldConnectPty) {
+      return;
+    }
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -297,7 +315,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -483,7 +501,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeRef.current, channel);
+    const url = buildWsUrl(token, ptyResumeId, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -618,7 +636,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel]);
+  }, [channel, ptyResumeId, shouldConnectPty]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
