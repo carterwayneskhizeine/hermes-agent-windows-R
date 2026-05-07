@@ -64,3 +64,40 @@ hermes profile list
 ```
 
 多实例和 Dashboard 端口说明见 [Profile 与多实例](profiles-and-multi-instance.md)。
+
+## 中国大陆用户的 Telegram 代理
+
+如果在中国大陆使用 Telegram Gateway，通常需要给 Telegram bot 配置代理。示例 `.env.example` 中的 `TELEGRAM_PROXY` 是这个用途：
+
+```env
+TELEGRAM_PROXY=socks5://127.0.0.1:12334
+```
+
+这里的 `12334` 是本机代理软件的 SOCKS5 监听端口。比如使用 Hiddify 时，如果它的本地透明代理 / SOCKS5 端口是 `12334`，就可以这样写；如果你的 Hiddify、Clash、v2rayN 或其他代理软件使用了不同端口，请改成实际端口。
+
+常见写法：
+
+```env
+TELEGRAM_PROXY=socks5://127.0.0.1:<你的 SOCKS5 端口>
+```
+
+如果代理需要用户名和密码：
+
+```env
+TELEGRAM_PROXY=socks5://<用户名>:<密码>@127.0.0.1:<你的 SOCKS5 端口>
+```
+
+每个启用 Telegram 的 profile 都需要在自己的 `.env` 中配置。例如：
+
+```text
+C:\Users\<用户名>\.hermes\.env
+C:\Users\<用户名>\.hermes\profiles\turing\.env
+C:\Users\<用户名>\.hermes\profiles\belbin\.env
+```
+
+配置后重启对应的 Gateway：
+
+```powershell
+hermes gateway run
+hermes -p turing gateway run
+```
