@@ -34,6 +34,7 @@ hermes gateway run
 | [Windows 快速安装](docs/windows/quickstart.md) | 环境要求、安装步骤、首次配置、Git Bash 路径、常用命令 |
 | [psmux 一键启动](docs/windows/psmux-startup.md) | 安装 `psmux`、使用 `start-hermes.ps1`、给 AI 修改脚本的提示词 |
 | [Profile 与多实例](docs/windows/profiles-and-multi-instance.md) | 创建 profile、`-p` 参数、`HERMES_HOME`、多 Gateway / Dashboard 并行运行 |
+| [Profile 配置示例](docs/windows/profile-config.md) | 去敏后的 default / belbin / goldie / mem / turing 配置示例 |
 | [Dashboard Web UI](docs/windows/dashboard.md) | Dashboard 启动、前端构建、TUI Chat、多 profile 端口 |
 | [Windows 特有说明](docs/windows/windows-notes.md) | Git Bash 路径转换、CWD、危险命令拦截、进程管理、适配摘要 |
 | [Windows 故障排查](docs/windows/troubleshooting.md) | 常见安装、端口、Web UI、Gateway lock、路径问题 |
