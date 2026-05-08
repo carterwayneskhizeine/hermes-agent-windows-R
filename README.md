@@ -30,14 +30,14 @@ For full installation instructions, Windows-specific notes, and multi-instance c
 
 | Topic | Description |
 |-------|-------------|
-| [Windows Docs Overview](docs/windows/README.md) | Entry point for Windows installation, running, and troubleshooting |
-| [Windows Quick Start](docs/windows/quickstart.md) | Requirements, installation steps, initial config, Git Bash paths, common commands |
-| [psmux One-click Launch](docs/windows/psmux-startup.md) | Install `psmux`, use `start-hermes.ps1`, AI script modification prompts |
-| [Profiles & Multi-instance](docs/windows/profiles-and-multi-instance.md) | Create profiles, `-p` flag, `HERMES_HOME`, run multiple Gateways/Dashboards in parallel |
-| [Profile Config Examples](docs/windows/profile-config.md) | Sanitized config examples: default / belbin / goldie / mem / turing |
-| [Dashboard Web UI](docs/windows/dashboard.md) | Launch Dashboard, frontend build, TUI Chat, multi-profile ports |
-| [Windows-specific Notes](docs/windows/windows-notes.md) | Git Bash path conversion, CWD, dangerous command interception, process management, adaptation summary |
-| [Windows Troubleshooting](docs/windows/troubleshooting.md) | Common install, port, Web UI, Gateway lock, and path issues |
+| [Windows Docs Overview](docs/windows_EN/README.md) | Entry point for Windows installation, running, and troubleshooting |
+| [Windows Quick Start](docs/windows_EN/quickstart.md) | Requirements, installation steps, initial config, Git Bash paths, common commands |
+| [psmux One-click Launch](docs/windows_EN/psmux-startup.md) | Install `psmux`, use `start-hermes.ps1`, AI script modification prompts |
+| [Profiles & Multi-instance](docs/windows_EN/profiles-and-multi-instance.md) | Create profiles, `-p` flag, `HERMES_HOME`, run multiple Gateways/Dashboards in parallel |
+| [Profile Config Examples](docs/windows_EN/profile-config.md) | Sanitized config examples: default / belbin / goldie / mem / turing |
+| [Dashboard Web UI](docs/windows_EN/dashboard.md) | Launch Dashboard, frontend build, TUI Chat, multi-profile ports |
+| [Windows-specific Notes](docs/windows_EN/windows-notes.md) | Git Bash path conversion, CWD, dangerous command interception, process management, adaptation summary |
+| [Windows Troubleshooting](docs/windows_EN/troubleshooting.md) | Common install, port, Web UI, Gateway lock, and path issues |
 | [Windows Adaptation Log](docs/winodws_support_EN/) | Full porting records and historical change notes (English) |
 
 ## Common Commands
