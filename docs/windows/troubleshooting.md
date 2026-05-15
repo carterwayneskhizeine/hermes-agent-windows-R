@@ -99,3 +99,27 @@ Get-Process | Where-Object { $_.ProcessName -match "python|hermes" }
 ```
 
 如果确认没有 Gateway 运行，再删除对应 profile 下的 runtime lock。不要在另一个 Gateway 正在运行时删除 lock。
+
+## 用 `start-hermes.ps1` 启动多 profile 时报 `❌ Gateway already running`
+
+**现象：** 运行 `stop-hermes.ps1` 后 `Get-Process` 已无 Hermes 进程，但启动第二个（或后续）Gateway 时仍报 "Gateway already running (PID XXXXX)"。
+
+**根本原因：** 全局 `active_profile` 文件被改成了某个具名 profile（例如 `"turing"`）。这通常由交互式 CLI 中执行 `hermes profile use <名称>` 触发。
+
+`start-hermes.ps1` 的 `default-gw` session 把 `HERMES_HOME` 设为全局根目录，但没有加 `-p` 参数，CLI 会读取 `active_profile` 并自动把 `HERMES_HOME` 覆写为该 profile 的目录。结果 `default-gw` 和 `<profile>-gw` 都落到同一个 profile 目录下启动，产生冲突。
+
+**诊断：** 检查当前 sticky active profile：
+
+```powershell
+# 查看文件内容（路径根据你的 HERMES_HOME 调整）
+Get-Content "C:\Users\<你的用户名>\AppData\Local\hermes\active_profile"
+
+# 或通过 hermes 命令查看（◆ 标记为当前活跃 profile）
+hermes profile list
+```
+
+**解决方法：重置 active profile 为 default**
+
+```powershell
+hermes profile use default
+```

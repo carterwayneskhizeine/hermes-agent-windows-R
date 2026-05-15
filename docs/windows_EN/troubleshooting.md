@@ -99,3 +99,25 @@ Get-Process | Where-Object { $_.ProcessName -match "python|hermes" }
 ```
 
 If you confirm no Gateway is running, delete the runtime lock under the corresponding profile directory. Do not delete the lock while another Gateway is actively running.
+
+## `❌ Gateway already running` when starting multiple profiles with `start-hermes.ps1`
+
+**Symptom:** The second (or later) Gateway reports "Gateway already running (PID XXXXX)" even though `stop-hermes.ps1` has been run and `Get-Process` shows no Hermes processes.
+
+**Root cause:** The global `active_profile` file has been changed from `"default"` to a named profile (e.g. `"turing"`). This happens when you run `hermes profile use <name>` from the interactive CLI.
+
+When `start-hermes.ps1` starts the `default-gw` session with `HERMES_HOME` pointing to the global root and no explicit `-p` flag, the CLI reads `active_profile` and silently overrides `HERMES_HOME` to the named profile's directory. The `default-gw` and `<profile>-gw` sessions then both try to start under the same profile — triggering the conflict.
+
+**Diagnosis:** Check which profile is currently sticky-active:
+
+```powershell
+Get-Content "$env:APPDATA\..\Local\hermes\active_profile"
+# or wherever your HERMES_HOME root is
+hermes profile list   # the ◆ marker shows the active profile
+```
+
+**Fix — Reset active profile to default**
+
+```powershell
+hermes profile use default
+```
